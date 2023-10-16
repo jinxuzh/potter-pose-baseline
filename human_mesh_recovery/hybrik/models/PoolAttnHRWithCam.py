@@ -16,7 +16,7 @@ ModelOutput = namedtuple(
     field_names=['pred_shape', 'pred_theta_mats', 'pred_phi', 'pred_delta_shape', 'pred_leaf',
                  'pred_uvd_jts', 'pred_xyz_jts_29', 'pred_xyz_jts_24', 'pred_xyz_jts_24_struct',
                  'pred_xyz_jts_17', 'pred_vertices', 'maxvals', 'cam_scale', 'cam_trans', 'cam_root',
-                 'uvd_heatmap', 'transl', 'img_feat']
+                 'uvd_heatmap', 'transl', 'img_feat', 'all_HR_stage']
 )
 ModelOutput.__new__.__defaults__ = (None,) * len(ModelOutput._fields)
 
@@ -253,13 +253,13 @@ class PoolAttnHRCam(nn.Module):
         batch_size = x.shape[0]
 
 
-        x_feature, xc = self.poolattnformer_pose(x)  ######### ######### x0 torch.Size([B, 64, 64, 64]  /
+        x_feature, xc, all_HR_stage = self.poolattnformer_pose(x)  ######### ######### x0 torch.Size([B, 64, 64, 64]  /
 
         #### predict pose
         out = self.up_sample(x_feature)  ######### out1 torch.Size([B, 256, 64, 64])
         out = self.norm1(out)
         out = self.final_layer(out)  ######### out2 torch.Size([B, 1856, 64, 64])
-        out = self.pose_layer(out.reshape(out.shape[0],self.num_joints, out.shape[2], out.shape[3], -1))
+        out = self.pose_layer(out.reshape(out.shape[0],self.num_joints, out.shape[2], out.shape[3], -1)) # torch.Size([1, 29, 64, 64, 64])
         out = out.reshape(out.shape[0], self.num_joints, out.shape[2], out.shape[3], -1)
         out = self.norm2(out)
 
@@ -392,8 +392,9 @@ class PoolAttnHRCam(nn.Module):
             cam_root=camera_root,
             transl=transl,
             # uvd_heatmap=torch.stack([hm_x0, hm_y0, hm_z0], dim=2),
-            # uvd_heatmap=heatmaps,
-            # img_feat=x0
+            uvd_heatmap=heatmaps,
+            # img_feat=x0,
+            all_HR_stage=all_HR_stage,
         )
         return output
 

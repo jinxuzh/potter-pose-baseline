@@ -1254,7 +1254,8 @@ def heatmap_to_coord(pred_jts, pred_scores, hm_shape, bbox, output_3d=False, mea
 def transform_preds(coords, center, scale, output_size):
     target_coords = np.zeros(coords.shape)
     trans = get_affine_transform(center, scale, 0, output_size, inv=1)
-    target_coords[0:2] = affine_transform(coords[0:2], trans)
+    for p in range(coords.shape[0]):
+        target_coords[p, 0:2] = affine_transform(coords[p, 0:2], trans)
     return target_coords
 
 
@@ -1319,7 +1320,7 @@ def get_affine_transform(center,
     if not isinstance(scale, np.ndarray) and not isinstance(scale, list):
         scale = np.array([scale, scale])
 
-    scale_tmp = scale
+    scale_tmp = scale * 200.0
     src_w = scale_tmp[0]
     dst_w = output_size[0]
     dst_h = output_size[1]
@@ -1464,3 +1465,36 @@ def rot_theta(theta, xyz_coord, rot, smpl_parents):
     new_theta = np.concatenate([theta_0, new_theta_left], axis=0)
     return new_theta
 
+
+def fliplr_joints(joints, joints_vis, width, matched_parts):
+    """
+    flip coords
+    """
+    # Flip horizontal
+    joints[:, 0] = width - joints[:, 0] - 1
+
+    # Change left-right parts
+    for pair in matched_parts:
+        joints[pair[0], :], joints[pair[1], :] = \
+            joints[pair[1], :], joints[pair[0], :].copy()
+        joints_vis[pair[0], :], joints_vis[pair[1], :] = \
+            joints_vis[pair[1], :], joints_vis[pair[0], :].copy()
+
+    return joints*joints_vis, joints_vis
+
+
+def flip_back(output_flipped, matched_parts):
+    '''
+    ouput_flipped: numpy.ndarray(batch_size, num_joints, height, width)
+    '''
+    assert output_flipped.ndim == 4,\
+        'output_flipped should be [batch_size, num_joints, height, width]'
+
+    output_flipped = output_flipped[:, :, :, ::-1]
+
+    for pair in matched_parts:
+        tmp = output_flipped[:, pair[0], :, :].copy()
+        output_flipped[:, pair[0], :, :] = output_flipped[:, pair[1], :, :]
+        output_flipped[:, pair[1], :, :] = tmp
+
+    return output_flipped

@@ -491,16 +491,21 @@ class HR_stream(nn.Module):
         x2 = x[2]
         x3 = x[3]
 
+        each_HR_stage = []
+
         x1_new = self.patch_emb1(x1) + x0
         x1_new = self.Block1(x1_new)
+        each_HR_stage.append(x1_new.clone())
 
         x2_new = self.patch_emb2(x2) + x1_new
         x2_new = self.Block2(x2_new)
+        each_HR_stage.append(x2_new.clone())
 
         x3_new = self.patch_emb3(x3) + x2_new
         x3_new = self.Block3(x3_new)
+        each_HR_stage.append(x3_new.clone())
 
-        return x3_new, x3
+        return x3_new, x3, each_HR_stage
 
 
 
@@ -555,11 +560,11 @@ class PoolAttnFormer_hr(nn.Module):
     def forward(self, x):
         # through backbone
         x = self.poolattn_cls(x)
-        x0, x3 = self.stage1(x)
-        x0 = self.norm0(x0)
+        x3_new, x3, each_HR_stage = self.stage1(x)
+        x3_new = self.norm0(x3_new)
         x3 = self.norm3(x3)
 
-        return x0, x3
+        return x3_new, x3, each_HR_stage
 
 
 def load_pretrained_weights(model, checkpoint):

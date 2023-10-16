@@ -1,0 +1,11 @@
+*.pyc
+
+__pycache__
+
+human_mesh_recovery/exp/
+
+human_mesh_recovery/output/
+
+human_mesh_recovery/model_files/
+
+human_mesh_recovery/eval/
