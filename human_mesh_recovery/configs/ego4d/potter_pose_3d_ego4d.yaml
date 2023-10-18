@@ -1,15 +1,16 @@
-OUTPUT_DIR: 'output'
-GPUS: '0,1,2,3'
+GPUS: '0,1'
 OUTPUT_DIR: 'output'
 LOG_DIR: 'log'
 WORKERS: 4
-PRINT_FREQ: 150
+PRINT_FREQ: 200
 DATASET:
   DATASET: 'ego4d'
   ROOT: '/mnt/volume2/Data/Ego4D'
-  FLIP: true
-  ROT_FACTOR: 40
-  SCALE_FACTOR: 0.3
+  VIS_THRESHOLD: 10
+  BBOX_PADDING: 20
+  ORIGINAL_IMAGE_SIZE:
+  - 512
+  - 512
 MODEL:
   NAME: 'PoolAttnHRCam_Pose_3D'
   IMAGE_SIZE:
@@ -22,14 +23,10 @@ MODEL:
   - 256
   NUM_LAYERS: 34
   EXTRA:
-    TARGET_TYPE: 'gaussian'
     HEATMAP_SIZE:
     - 56
     - 56
     SIGMA: 2
-    CROP: 'padding'
-    AUGMENT: 'none'
-    PRESET: 'simple_smpl_3d_cam'
     DEPTH_DIM: 56
     LAYERS:
       - 2
@@ -48,40 +45,20 @@ MODEL:
       - 4
     DROP_RATE: 0.1
     DROP_PATH_RATE: 0.1
-#    PRETRAINED: "./model_files/poolattnhr_pre.pth"
-    PRETRAINED: "None"
-  POST:
-    NORM_TYPE: 'softmax'
 LOSS:
   USE_TARGET_WEIGHT: true
 TEST:
-  BATCH_SIZE: 32
-  COCO_BBOX_FILE: "None"
-  BBOX_THRE: 1.0
-  FLIP_TEST: false
-  IMAGE_THRE: 0.0
-  IN_VIS_THRE: 0.2
-  MODEL_FILE: ''
-  NMS_THRE: 1.0
-  OKS_THRE: 0.9
-  USE_GT_BBOX: true
+  BATCH_SIZE: 64
 TRAIN:
-  BATCH_SIZE: 24
+  BATCH_SIZE: 64
   SHUFFLE: true
   BEGIN_EPOCH: 0
   END_EPOCH: 140
-  RESUME: false
-  OPTIMIZER: 'adam'
-  LR: 0.001
+  LR: 0.0001
   LR_FACTOR: 0.1
   LR_STEP:
   - 90
-  - 120 
-  WD: 0.0001
-  GAMMA1: 0.99
-  GAMMA2: 0.0
-  MOMENTUM: 0.9
-  NESTEROV: false
+  - 120
 DEBUG:
   DEBUG: true
   SAVE_BATCH_IMAGES_GT: true

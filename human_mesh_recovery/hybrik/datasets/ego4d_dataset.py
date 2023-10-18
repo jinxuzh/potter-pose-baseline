@@ -18,19 +18,20 @@ class ego4dDataset(Dataset):
     Load Ego4D dataset with only Ego(Aria) images for 3D hand pose estimation
     Reference: https://github.com/leoxiaobin/deep-high-resolution-net.pytorch
     """
-    def __init__(self, root, anno_type, split, transform=None):
+    def __init__(self, cfg, anno_type, split, transform=None, use_preset=False):
         # TODO: Set parameters based on config file
-        self.dataset_root = root
+        self.dataset_root = cfg.DATASET.ROOT
         self.anno_type = anno_type
-        self.num_joints = 21                      # Number of joints for single hand
-        self.undist_img_dim = np.array([512,512]) # [H, W]
-        self.valid_kpts_threshold = 10            # Threshold of minimum number of valid kpts in single hand
-        self.bbox_padding = 20                    # Pixels to pad around hand kpts to find bbox 
-        self.pixel_std = 200                      # Pixel std to propose scale factor
-        self.image_size = np.array([224,224])     # Size of image after affine transformation
-        self.heatmap_size = (56,56)
-        self.sigma = 2
         self.split = split
+        self.use_preset = use_preset
+        self.num_joints = cfg.MODEL.NUM_JOINTS                          # Number of joints for single hand
+        self.undist_img_dim = np.array(cfg.DATASET.ORIGINAL_IMAGE_SIZE) # [H, W]
+        self.valid_kpts_threshold = cfg.DATASET.VIS_THRESHOLD           # Threshold of minimum number of valid kpts in single hand
+        self.bbox_padding = cfg.DATASET.BBOX_PADDING                    # Pixels to pad around hand kpts to find bbox 
+        self.pixel_std = 200                                            # Pixel std to propose scale factor
+        self.image_size = np.array(cfg.MODEL.IMAGE_SIZE)                # Size of image after affine transformation
+        self.heatmap_size = np.array(cfg.MODEL.EXTRA.HEATMAP_SIZE)
+        self.sigma = cfg.MODEL.EXTRA.SIGMA
 
         self.takes = json.load(open(os.path.join(self.dataset_root, "takes.json")))
         self.hand_anno_dir = os.path.join(self.dataset_root, 'annotations/ego_pose/hand', self.anno_type)
@@ -149,30 +150,31 @@ class ego4dDataset(Dataset):
     def load_raw_data(self):
         gt_db = []
 
-        # # Based on split uids, found local take uids that has annotation
-        # curr_split_uid = self.split_take_dict[self.split]
-        # available_curr_split_uid = [t for t in self.all_take_uid if t in curr_split_uid]
-        # print(f"Number of {self.split} takes: {len(curr_split_uid)}\t Found local {len(available_curr_split_uid)} takes")
-
-        if self.split == 'train':
-            available_curr_split_uid = [
-                "e3cb859e-73ca-4cef-8c08-296bafdb43cd",
-                "d2218738-2af2-4585-bd1c-af8ad10d7827",
-                "3940a14c-f0ae-4636-8f03-52daa071f084",
-                "989b038e-d46c-4433-b968-87b58a4c7037",
-                "354f076e-079f-440d-bd38-97ddfcd19002",
-                "7014a547-6f84-48cb-bc91-28012c4cce06",
-                "f0ebc587-3687-494d-a707-2a5d52b64719",
-                "c507b073-7bf9-40db-8537-de599b6f6565",
-                "794b3bd3-eac9-4d0d-9789-bd068bff3944",
-                "c53a1199-5ca1-4aa8-ac4e-38227ff44689",
-            ]
-        elif self.split == 'val':
-            available_curr_split_uid = [
-                "6e5211e1-72d8-4032-ba56-b4095c0f2b36",
-                "a8d04142-fc0b-4ad4-acaa-8c17424411ff",
-                "e5beffc8-2cc5-4cc5-9e0e-b22b843aaa4c",
-            ]
+        if not self.use_preset:
+            # Based on split uids, found local take uids that has annotation
+            curr_split_uid = self.split_take_dict[self.split]
+            available_curr_split_uid = [t for t in self.all_take_uid if t in curr_split_uid]
+            print(f"Number of {self.split} takes: {len(curr_split_uid)}\t Found local {len(available_curr_split_uid)} takes")
+        else:
+            if self.split == 'train':
+                available_curr_split_uid = [
+                    "e3cb859e-73ca-4cef-8c08-296bafdb43cd",
+                    "d2218738-2af2-4585-bd1c-af8ad10d7827",
+                    "3940a14c-f0ae-4636-8f03-52daa071f084",
+                    "989b038e-d46c-4433-b968-87b58a4c7037",
+                    "354f076e-079f-440d-bd38-97ddfcd19002",
+                    "7014a547-6f84-48cb-bc91-28012c4cce06",
+                    "f0ebc587-3687-494d-a707-2a5d52b64719",
+                    "c507b073-7bf9-40db-8537-de599b6f6565",
+                    "794b3bd3-eac9-4d0d-9789-bd068bff3944",
+                    "c53a1199-5ca1-4aa8-ac4e-38227ff44689",
+                ]
+            elif self.split == 'val':
+                available_curr_split_uid = [
+                    "6e5211e1-72d8-4032-ba56-b4095c0f2b36",
+                    "a8d04142-fc0b-4ad4-acaa-8c17424411ff",
+                    "e5beffc8-2cc5-4cc5-9e0e-b22b843aaa4c",
+                ]
 
         # Iterate through all takes from annotation directory and check
         for curr_take_uid in available_curr_split_uid:
@@ -271,7 +273,30 @@ class ego4dDataset(Dataset):
     def load_aria_calib(self, curr_take_name):
         # Load aria calibration model
         capture_name = '_'.join(curr_take_name.split('_')[:-1])
-        vrs_path = os.path.join(self.dataset_root, 'captures', capture_name, 'videos/aria01.vrs')
+        # Find aria names
+        take = [t for t in self.takes if t["root_dir"] == curr_take_name]
+        take = take[0]
+        ego_cam_names = [
+            x["cam_id"] for x in take["capture"]["cameras"] if str(x["is_ego"]).lower() == "true"
+        ]
+        assert len(ego_cam_names) > 0, "No ego cameras found!"
+        if len(ego_cam_names) > 1:
+            ego_cam_names = [
+                cam for cam in ego_cam_names if cam in take["frame_aligned_videos"].keys()
+            ]
+            assert len(ego_cam_names) > 0, "No frame-aligned ego cameras found!"
+            if len(ego_cam_names) > 1:
+                ego_cam_names_filtered = [
+                    cam for cam in ego_cam_names if "aria" in cam.lower()
+                ]
+                if len(ego_cam_names_filtered) == 1:
+                    ego_cam_names = ego_cam_names_filtered
+            assert (
+                len(ego_cam_names) == 1
+            ), f"Found too many ({len(ego_cam_names)}) ego cameras: {ego_cam_names}"
+        ego_cam_names = ego_cam_names[0]
+        # Load aria calibration model
+        vrs_path = os.path.join(self.dataset_root, 'captures', capture_name, f'videos/{ego_cam_names}.vrs')
         aria_rgb_calib = get_aria_camera_models(vrs_path)['214-1']
         dst_cam_calib = calibration.get_linear_camera_calibration(512, 512, 150)
         # Generate mask in undistorted aria view

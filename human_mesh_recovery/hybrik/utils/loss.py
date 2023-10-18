@@ -41,7 +41,7 @@ class Pose3DLoss(nn.Module):
         heatmaps_pred = hm_pred.reshape(batch_size, num_joints, -1)
         heatmaps_gt = hm_gt.reshape(batch_size, num_joints, -1)
 
-        # Compute MSE loss between pred and gt 2D heatmap  for only visible kpts
+        # Compute MSE loss between pred and gt 2D heatmap for only visible kpts
         hm_diff = heatmaps_pred - heatmaps_gt
         hm_loss = torch.mean(hm_diff**2, axis=2) * vis_flag
         hm_loss = torch.sum(hm_loss) / torch.sum(vis_flag)
