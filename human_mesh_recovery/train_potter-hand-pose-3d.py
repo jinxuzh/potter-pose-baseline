@@ -19,6 +19,7 @@ from hybrik.utils.functions import AverageMeter
 from hybrik.utils.vis import save_debug_images
 from hybrik.utils.evaluate import accuracy
 from hybrik.datasets.ego4d_dataset import ego4dDataset
+from hybrik.utils.option import parse_args_function
 
 
 def train(config, train_loader, model, criterion, optimizer, epoch, output_dir, device, logger, writer_dict):
@@ -147,20 +148,17 @@ def validate(config, val_loader, model, criterion, output_dir, device, logger, w
     return total_loss.avg
 
 
-def main():
+def main(args):
     torch.cuda.empty_cache()
-    cfg_file = 'configs/ego4d/potter_pose_3d_ego4d.yaml'
-    pretrained_hand_pose_CKPT = None #'output/ego4d/PoolAttnHRCam_Pose_3D/potter_pose_3d_ego4d-Conv3d+MLP/POTTER-HandPose-freiHand.pt'
-    CLS_CKPT = 'eval/cls_s12.pth'
-    cfg = update_config(cfg_file)
-    gpu_index = 0
-    device = torch.device(f"cuda:{gpu_index}")
-    logger, final_output_dir, tb_log_dir = create_logger(cfg, cfg_file, 'train')
+    cfg = update_config(args.cfg_file)
+    pretrained_hand_pose_CKPT = args.pretrained_ckpt
+    device = torch.device(f'cuda:{args.gpu_number[0]}' if torch.cuda.is_available() else 'cpu')
+    logger, final_output_dir, tb_log_dir = create_logger(cfg, args.cfg_file, 'train')
 
     ############ MODEL ###########
     model = PoolAttnHR_Pose_3D(**cfg.MODEL)
     # Load pretrained cls_weight or available hand pose weight
-    cls_weight = torch.load(CLS_CKPT)
+    cls_weight = torch.load(args.cls_ckpt)
     if pretrained_hand_pose_CKPT:
         load_pretrained_weights(model, torch.load(pretrained_hand_pose_CKPT))
         logger.info('Loaded pretrained hand pose estimation weight')
@@ -193,15 +191,15 @@ def main():
                              std=[0.229, 0.224, 0.225])
     ])
     train_dataset = ego4dDataset(cfg, 
-                                 anno_type='annotation', 
+                                 anno_type=args.anno_type, 
                                  split='train', 
                                  transform=transform,
-                                 use_preset=True)
+                                 use_preset=args.use_preset)
     valid_dataset = ego4dDataset(cfg, 
-                                 anno_type='annotation', 
+                                 anno_type=args.anno_type, 
                                  split='val', 
                                  transform=transform,
-                                 use_preset=True)
+                                 use_preset=args.use_preset)
     # Dataloader
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
@@ -217,6 +215,7 @@ def main():
         num_workers=cfg.WORKERS,
         pin_memory=True
     )
+    logger.info(f'Number of takes: Train: {len(train_dataset.curr_split_take)}\t Val: {len(valid_dataset.curr_split_take)}')
     logger.info(f"Learning rate: {cfg.TRAIN.LR} || Batch size: Train:{cfg.TRAIN.BATCH_SIZE}\t Val: {cfg.TEST.BATCH_SIZE}")
 
     ############ Train model & validation ###########
@@ -252,4 +251,5 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    args = parse_args_function()
+    main(args)
