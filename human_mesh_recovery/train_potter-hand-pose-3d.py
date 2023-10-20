@@ -31,6 +31,7 @@ def train(config, train_loader, model, criterion, optimizer, epoch, output_dir, 
     # switch to train mode
     model.train()
     train_loader = tqdm(train_loader, dynamic_ncols=True)
+    print_interval = len(train_loader) // config.TRAIN_PRINT_NUM
 
     for i, (input, pose_2d_gt, hm_gt, target_weight, pose_3d_gt, vis_flag, _) in enumerate(train_loader):
         # compute output
@@ -61,13 +62,13 @@ def train(config, train_loader, model, criterion, optimizer, epoch, output_dir, 
         # acc.update(avg_acc, cnt)
 
         # Log info
-        if (i+1) % config.PRINT_FREQ == 0:
+        if (i+1) % print_interval == 0:
             msg = 'Epoch: [{0}][{1}/{2}]\t' \
                   '2D Loss {loss_2d.val:.5f} ({loss_2d.avg:.5f})\t' \
                   '3D Loss {loss_3d.val:.5f} ({loss_3d.avg:.5f})\t' \
                   'Total loss {total_loss.val:.5f} ({total_loss.avg:.5f})\t' \
                   '2D PCK Accuracy {acc.val:.3f} ({acc.avg:.3f})'.format(
-                      epoch, i, len(train_loader),
+                      epoch, i+1, len(train_loader),
                       loss_2d=loss_2d, loss_3d=loss_3d, total_loss=total_loss, acc=acc)
             logger.info(msg)
 
@@ -116,27 +117,26 @@ def validate(config, val_loader, model, criterion, output_dir, device, logger, w
             loss_3d.update(pose_3d_loss.item())
             total_loss.update(loss.item())
 
-            # Caculate 2D PCK as accuracy
-            _, avg_acc, cnt, pred = accuracy(hm_pred.detach().cpu().numpy(),
-                                            hm_gt.detach().cpu().numpy())
-            acc.update(avg_acc, cnt)
+            # # Caculate 2D PCK as accuracy
+            # _, avg_acc, cnt, pred = accuracy(hm_pred.detach().cpu().numpy(),
+            #                                 hm_gt.detach().cpu().numpy())
+            # acc.update(avg_acc, cnt)
 
-            # Log info
-            if (i+1) % config.PRINT_FREQ == 0:
-                msg = 'Test: [{0}/{1}]\t' \
-                      '2D Loss {loss_2d.val:.5f} ({loss_2d.avg:.5f})\t' \
-                      '3D Loss {loss_3d.val:.5f} ({loss_3d.avg:.5f})\t' \
-                      'Total loss {total_loss.val:.5f} ({total_loss.avg:.5f})\t' \
-                      '2D PCK Accuracy {acc.val:.3f} ({acc.avg:.3f})'.format(
-                          i, len(val_loader),
-                          loss_2d=loss_2d, loss_3d=loss_3d, total_loss=total_loss, acc=acc)
-                logger.info(msg)
+        # Log info
+        msg = 'Test: [{0}/{1}]\t' \
+                '2D Loss {loss_2d.val:.5f} ({loss_2d.avg:.5f})\t' \
+                '3D Loss {loss_3d.val:.5f} ({loss_3d.avg:.5f})\t' \
+                'Total loss {total_loss.val:.5f} ({total_loss.avg:.5f})\t' \
+                '2D PCK Accuracy {acc.val:.3f} ({acc.avg:.3f})'.format(
+                    i+1, len(val_loader),
+                    loss_2d=loss_2d, loss_3d=loss_3d, total_loss=total_loss, acc=acc)
+        logger.info(msg)
 
-                if writer_dict:
-                    writer = writer_dict['writer']
-                    global_steps = writer_dict['valid_global_steps']
-                    writer.add_scalar('Loss/val', total_loss.avg, global_steps)
-                    writer_dict['valid_global_steps'] = global_steps + 1
+        if writer_dict:
+            writer = writer_dict['writer']
+            global_steps = writer_dict['valid_global_steps']
+            writer.add_scalar('Loss/val', total_loss.avg, global_steps)
+            writer_dict['valid_global_steps'] = global_steps + 1
                 
                 # # Save debug images
                 # prefix = '{}_{}'.format(os.path.join(output_dir, 'val'), i+1)

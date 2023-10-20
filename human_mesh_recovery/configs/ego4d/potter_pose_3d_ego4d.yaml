@@ -2,7 +2,7 @@ GPUS: '0,1'
 OUTPUT_DIR: 'output'
 LOG_DIR: 'log'
 WORKERS: 4
-PRINT_FREQ: 200
+TRAIN_PRINT_NUM: 6
 DATASET:
   DATASET: 'ego4d'
   ROOT: '/mnt/volume2/Data/Ego4D'

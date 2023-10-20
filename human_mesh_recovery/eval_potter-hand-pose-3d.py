@@ -51,7 +51,7 @@ def main(args):
         num_workers=cfg.WORKERS,
         pin_memory=True
     )
-    print(f'Number of takes: Train: {len(valid_dataset.curr_split_take)}\t Val: {len(valid_dataset.curr_split_take)}')
+    print(f'Number of used takes: {len(valid_dataset.curr_split_take)}')
 
     ######### Inferece #########
     epoch_loss_3d_pos = AverageMeter()
