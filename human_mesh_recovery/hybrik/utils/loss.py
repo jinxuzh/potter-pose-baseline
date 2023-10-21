@@ -55,7 +55,7 @@ class Pose3DLoss(nn.Module):
         return hm_loss, pose_3d_loss
     
 
-def mpjpe(predicted, target, num=None):
+def mpjpe(predicted, target):
     """
     Mean per-joint position error (i.e. mean Euclidean distance) from 
     https://github.com/zhaoweixi/GraFormer/blob/main/common/loss.py.
@@ -64,11 +64,11 @@ def mpjpe(predicted, target, num=None):
     """
     assert predicted.shape == target.shape
     pjpe = torch.norm(predicted - target, dim=len(target.shape) - 1)
-    mpjpe = torch.sum(pjpe) / num if num else torch.mean(pjpe)
+    mpjpe = torch.mean(pjpe)
     return mpjpe
 
 
-def p_mpjpe(predicted, target, num=None):
+def p_mpjpe(predicted, target):
     """
     Pose error: MPJPE after rigid alignment (scale, rotation, and translation),
     often referred to as "Protocol #2" in many papers.
@@ -112,5 +112,5 @@ def p_mpjpe(predicted, target, num=None):
 
     # Return MPJPE
     pjpe = np.linalg.norm(predicted_aligned - target, axis=len(target.shape) - 1)
-    p_mpjpe = np.sum(pjpe) / num if num else np.mean(pjpe)
+    p_mpjpe = np.mean(pjpe)
     return p_mpjpe

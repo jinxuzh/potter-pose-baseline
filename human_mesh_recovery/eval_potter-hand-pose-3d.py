@@ -27,7 +27,7 @@ def main(args):
     ############ MODEL ###########
     model = PoolAttnHR_Pose_3D(**cfg.MODEL)
     # Load pretrained cls_weight or available hand pose weight
-    load_pretrained_weights(model, torch.load(args.pretrained_ckpt))
+    load_pretrained_weights(model, torch.load(args.pretrained_ckpt, map_location=device))
     print('Loaded pretrained hand pose estimation weight')
     model = model.to(device)
 
@@ -46,7 +46,7 @@ def main(args):
     # Dataloader
     valid_loader = torch.utils.data.DataLoader(
         valid_dataset,
-        batch_size=cfg.TEST.BATCH_SIZE,
+        batch_size=1,
         shuffle=False,
         num_workers=cfg.WORKERS,
         pin_memory=True
@@ -78,15 +78,14 @@ def main(args):
 
             # Compute MPJPE
             valid_pred_3d_kpts = torch.from_numpy(pred_3d_pts)
-            valid_pred_3d_kpts[~vis_flag] = 0
+            valid_pred_3d_kpts = valid_pred_3d_kpts[vis_flag].view(1,-1,3)
             valid_pose_3d_gt = torch.from_numpy(gt_3d_kpts)
-            valid_pose_3d_gt[~vis_flag] = 0
-            num_valid = torch.sum(vis_flag).item()
-            epoch_loss_3d_pos.update(mpjpe(valid_pred_3d_kpts, valid_pose_3d_gt, num_valid).item(), B)
-            epoch_loss_3d_pos_procrustes.update(p_mpjpe(valid_pred_3d_kpts, valid_pose_3d_gt, num_valid), B)
+            valid_pose_3d_gt = valid_pose_3d_gt[vis_flag].view(1,-1,3)
+            epoch_loss_3d_pos.update(mpjpe(valid_pred_3d_kpts, valid_pose_3d_gt).item(), B)
+            epoch_loss_3d_pos_procrustes.update(p_mpjpe(valid_pred_3d_kpts, valid_pose_3d_gt), B)
 
-    print(f'Protocol #1   (MPJPE) action-wise average: {epoch_loss_3d_pos.avg:.2f} (mm)')
-    print(f'Protocol #2 (P-MPJPE) action-wise average: {epoch_loss_3d_pos_procrustes.avg:.2f} (mm)')
+    print(f'MPJPE: {epoch_loss_3d_pos.avg:.2f} (mm)')
+    print(f'P-MPJPE: {epoch_loss_3d_pos_procrustes.avg:.2f} (mm)')
 
 
 
