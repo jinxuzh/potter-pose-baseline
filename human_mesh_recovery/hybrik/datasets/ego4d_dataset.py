@@ -32,9 +32,11 @@ class ego4dDataset(Dataset):
         self.image_size = np.array(cfg.MODEL.IMAGE_SIZE)                # Size of image after affine transformation
         self.heatmap_size = np.array(cfg.MODEL.EXTRA.HEATMAP_SIZE)
         self.sigma = cfg.MODEL.EXTRA.SIGMA
+        assert self.split in ['train', 'val', 'test'], f"{self.split} is invalid split. Option: train, val, test"
 
         self.takes = json.load(open(os.path.join(self.dataset_root, "takes.json")))
         self.hand_anno_dir = os.path.join(self.dataset_root, 'annotations/ego_pose/hand', self.anno_type)
+        self.hand_bbox_anno_dir = os.path.join(self.dataset_root, 'annotations/ego_pose/hand/annotation_with_bbox')
         self.cam_pose_dir = os.path.join(self.dataset_root, 'annotations/ego_pose/hand/camera_pose')
         self.undist_img_dir = os.path.join(self.dataset_root, 'aria_undistorted_images', self.anno_type)
         self.all_take_uid = [k[:-5] for k in os.listdir(self.hand_anno_dir)]
@@ -138,6 +140,7 @@ class ego4dDataset(Dataset):
         meta = {
             "hand_wrist": torch.from_numpy(curr_db['joints_3d'][0].astype(np.float32)),
             "intrinsic": torch.from_numpy(curr_db['intrinsic'].astype(np.float32)),
+            "joint_view_stat": torch.from_numpy(curr_db['joint_view_stat'].astype(np.float64)),
         }
 
         return input, curr_2d_kpts, hm_2d, target_weight, curr_3d_kpts_cam_offset, vis_flag, meta
@@ -153,8 +156,14 @@ class ego4dDataset(Dataset):
         if not self.use_preset:
             # Based on split uids, found local take uids that has annotation
             curr_split_uid = self.split_take_dict[self.split]
-            available_curr_split_uid = [t for t in self.all_take_uid if t in curr_split_uid]
-            print(f"Number of {self.split} takes: {len(curr_split_uid)}\t Found local {len(available_curr_split_uid)} takes")
+            # available_curr_split_uid = [t for t in self.all_take_uid if t in curr_split_uid]
+
+            # Instead of following provided train split, use all available takes (not in val/test) as train
+            if self.split == 'train':
+                available_curr_split_uid = [t for t in self.all_take_uid if t not in self.split_take_dict['val'] + self.split_take_dict['test']]
+            else:
+                available_curr_split_uid = [t for t in self.all_take_uid if t in curr_split_uid]
+            print(f"Trying to use {len(available_curr_split_uid)} takes in {self.split} dataset")
         else:
             if self.split == 'train':
                 available_curr_split_uid = [
@@ -183,7 +192,11 @@ class ego4dDataset(Dataset):
             curr_take_anno_path = os.path.join(self.hand_anno_dir, f"{curr_take_uid}.json")
             curr_take_cam_pose_path = os.path.join(self.cam_pose_dir, f"{curr_take_uid}.json")
             curr_take_img_dir = os.path.join(self.undist_img_dir, curr_take_name)
+            curr_take_hand_bbox_dir = os.path.join(self.hand_bbox_anno_dir, f"{curr_take_uid}.json")
             # Check file existence
+            if self.split == 'test' and not os.path.exists(curr_take_hand_bbox_dir):
+                print(f"[Warning] {curr_take_name} misses necessary files. Skipped for now.")
+                continue
             if not os.path.exists(curr_take_anno_path) or not os.path.exists(curr_take_cam_pose_path) or \
                 not os.path.exists(curr_take_img_dir):
                 print(f"[Warning] {curr_take_name} misses necessary files. Skipped for now.")
@@ -192,6 +205,7 @@ class ego4dDataset(Dataset):
             # Load in JSON and image directory
             curr_take_anno = json.load(open(curr_take_anno_path))
             curr_take_cam_pose = json.load(open(curr_take_cam_pose_path))
+            curr_take_hand_bbox = json.load(open(curr_take_hand_bbox_dir)) if self.split == 'test' else None
             # Get valid takes info for all frames
             if len(curr_take_anno) > 0 and len(curr_take_anno) <= len(curr_take_cam_pose):
                 _, _, aria_mask = self.load_aria_calib(curr_take_name)
@@ -199,16 +213,17 @@ class ego4dDataset(Dataset):
                                                      curr_take_anno, 
                                                      curr_take_cam_pose,
                                                      curr_take_img_dir,
-                                                     aria_mask))
+                                                     aria_mask,
+                                                     curr_take_hand_bbox))
         return gt_db
 
     
-    def load_take_raw_data(self, take_name, anno, cam_pose, img_root_dir, aria_mask):
+    def load_take_raw_data(self, take_name, anno, cam_pose, img_root_dir, aria_mask, curr_take_hand_bbox):
         curr_take_db = []
 
         for frame_idx, curr_frame_anno in anno.items():
             # Load in current frame's 2D & 3D annotation and camera parameter
-            curr_hand_3d_kpts = self.load_frame_hand_3d_kpts(curr_frame_anno)
+            curr_hand_3d_kpts, joint_view_stat = self.load_frame_hand_3d_kpts(curr_frame_anno)
             curr_intri, curr_extri = self.load_frame_cam_pose(frame_idx, cam_pose)
             # Skip this frame if missing valid data
             if curr_hand_3d_kpts is None or curr_intri is None or curr_extri is None:
@@ -237,8 +252,18 @@ class ego4dDataset(Dataset):
                 if sum(valid_flag) >= self.valid_kpts_threshold:
                     # Assign original hand wrist 3d kpts back for later offset computation
                     one_hand_filtered_3d_kpts_cam[0] = one_hand_3d_kpts_cam[0]
-                    # Get bbox based on 2D GT kpts
-                    one_hand_bbox = get_bbox_from_kpts(one_hand_filtered_2d_kpts[valid_flag], self.undist_img_dim, self.bbox_padding)
+                    # Get bbox based on 2D GT kpts if not test split, otherwise use provided bbox
+                    if self.split == 'test':
+                        # Check if provided bbox exists and non-empty
+                        cur_frame_bbox_anno = curr_take_hand_bbox[frame_idx][0]
+                        if f"hand_bbox_{hand_name}" in cur_frame_bbox_anno.keys() and \
+                            len(cur_frame_bbox_anno[f"hand_bbox_{hand_name}"]) == 4:
+                            one_hand_bbox_original = xywh2xyxy(cur_frame_bbox_anno[f"hand_bbox_{hand_name}"])
+                            one_hand_bbox = aria_original_to_extracted(one_hand_bbox_original.reshape(2,2), (512,512)).flatten()
+                        else:
+                            continue
+                    else:
+                        one_hand_bbox = get_bbox_from_kpts(one_hand_filtered_2d_kpts[valid_flag], self.undist_img_dim, self.bbox_padding)
                     center, scale = xyxy2cs(*one_hand_bbox, self.undist_img_dim, self.pixel_std)
                     # Write into db
                     img_path = os.path.join(img_root_dir, f"{int(frame_idx):06d}.jpg")
@@ -254,6 +279,7 @@ class ego4dDataset(Dataset):
                         'frame_idx': frame_idx,
                         'hand_name': hand_name,
                         'bbox': one_hand_bbox,
+                        'joint_view_stat': joint_view_stat[start_idx:end_idx],
                     })
         return curr_take_db
 
@@ -309,18 +335,19 @@ class ego4dDataset(Dataset):
 
     def load_frame_hand_3d_kpts(self, frame_anno):
         """
-        Return GT 3D hand kpts in world frame
+        Return GT 3D hand kpts in world frame & number of views for each joint
         """
         # Check if annotation data exists
         if frame_anno is None or 'annotation3D' not in frame_anno[0].keys():
-            return None
+            return None, None
         
         curr_frame_3d_anno = frame_anno[0]['annotation3D']
         curr_frame_3d_kpts = []
+        joints_view_stat = []
         
         # Check if aria 3D annotation is non-empty
         if len(curr_frame_3d_anno) == 0:
-            return None
+            return None, None
         
         # Load 3D annotation for both hands
         for hand in HAND_ORDER:
@@ -333,8 +360,10 @@ class ego4dDataset(Dataset):
                             curr_frame_3d_kpts.append([curr_frame_3d_anno[finger_k_json]['x'],
                                                        curr_frame_3d_anno[finger_k_json]['y'],
                                                        curr_frame_3d_anno[finger_k_json]['z']])
+                            joints_view_stat.append(curr_frame_3d_anno[finger_k_json]['num_views_for_3d'])
                         else:
                             curr_frame_3d_kpts.append([None, None, None])
+                            joints_view_stat.append(None)
                 else:
                     finger_k_json = f"{hand}_{finger}"
                     # Load 3D
@@ -342,9 +371,11 @@ class ego4dDataset(Dataset):
                             curr_frame_3d_kpts.append([curr_frame_3d_anno[finger_k_json]['x'],
                                                        curr_frame_3d_anno[finger_k_json]['y'],
                                                        curr_frame_3d_anno[finger_k_json]['z']])
+                            joints_view_stat.append(curr_frame_3d_anno[finger_k_json]['num_views_for_3d'])
                     else:
                         curr_frame_3d_kpts.append([None, None, None])
-        return np.array(curr_frame_3d_kpts)
+                        joints_view_stat.append(None)
+        return np.array(curr_frame_3d_kpts), np.array(joints_view_stat)
 
 
     def load_frame_cam_pose(self, frame_idx, cam_pose):
@@ -675,5 +706,12 @@ def normalization_stat(loader):
         std = np.nanstd(all_data, axis=0)
         return mean, std
 
-
+def xywh2xyxy(bbox):
+    """
+    Given bbox in [x1,y1,w,h], return bbox corners [x1, y1, x2, y2]
+    """
+    x1, y1, w, h = bbox
+    x2 = x1 + w
+    y2 = y1 + h
+    return np.array([x1,y1,x2,y2])
 
