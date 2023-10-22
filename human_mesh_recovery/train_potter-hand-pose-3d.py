@@ -160,8 +160,8 @@ def main(args):
     # Load pretrained cls_weight or available hand pose weight
     cls_weight = torch.load(args.cls_ckpt)
     if pretrained_hand_pose_CKPT:
-        load_pretrained_weights(model, torch.load(pretrained_hand_pose_CKPT))
-        logger.info('Loaded pretrained hand pose estimation weight')
+        load_pretrained_weights(model, torch.load(pretrained_hand_pose_CKPT, map_location=device))
+        logger.info(f'Loaded pretrained weight from {pretrained_hand_pose_CKPT}')
     else:
         load_pretrained_weights(model.poolattnformer_pose.poolattn_cls, cls_weight)
         logger.info('Loaded pretrained POTTER-cls weight')
