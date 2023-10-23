@@ -30,6 +30,7 @@ def main(args):
     load_pretrained_weights(model, torch.load(args.pretrained_ckpt, map_location=device))
     print('Loaded pretrained hand pose estimation weight')
     model = model.to(device)
+    model = model.eval()
 
     ########### DATASET ###########
     # Load Ego4D dataset
