@@ -180,9 +180,7 @@ class ego4dDataset(Dataset):
                 ]
             elif self.split == 'val':
                 available_curr_split_uid = [
-                    "6e5211e1-72d8-4032-ba56-b4095c0f2b36",
-                    "a8d04142-fc0b-4ad4-acaa-8c17424411ff",
-                    "e5beffc8-2cc5-4cc5-9e0e-b22b843aaa4c",
+                    "7014a547-6f84-48cb-bc91-28012c4cce06"
                 ]
 
         # Iterate through all takes from annotation directory and check
@@ -237,8 +235,9 @@ class ego4dDataset(Dataset):
                 if np.any(np.isnan(one_hand_3d_kpts_world[0])):
                     continue
                 
-                # # Hand biomechanical structure check
-                one_hand_3d_kpts_world = joint_dist_angle_check(one_hand_3d_kpts_world)
+                # Hand biomechanical structure check for train and val
+                if self.split != 'test':
+                    one_hand_3d_kpts_world = joint_dist_angle_check(one_hand_3d_kpts_world)
                 # 3D world to camera (original view)
                 one_hand_3d_kpts_cam = world_to_cam(one_hand_3d_kpts_world, curr_extri)
                 # Camera original to original aria image plane
