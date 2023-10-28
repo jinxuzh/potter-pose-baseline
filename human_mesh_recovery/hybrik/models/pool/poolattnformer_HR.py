@@ -18,6 +18,7 @@ import os
 import copy
 import torch
 import torch.nn as nn
+import numpy as np
 
 from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 from timm.models.layers import DropPath, trunc_normal_
@@ -100,7 +101,7 @@ class PoolAttn(nn.Module):
     --pool_size: pooling size
     """
 
-    def __init__(self, dim=256, norm_layer=GroupNorm):
+    def __init__(self, dim=256, norm_layer=GroupNorm, save_inter_flag=False, block=None, sub_idx=None):
         super().__init__()
         self.patch_pool1 = nn.AdaptiveAvgPool2d((None, 4))
         self.patch_pool2 = nn.AdaptiveAvgPool2d((4, None))
@@ -115,21 +116,41 @@ class PoolAttn(nn.Module):
         self.proj1 = nn.Conv2d(dim, dim, 3, 1, 1, bias=True, groups=dim)
         self.proj2 = nn.Conv2d(dim, dim, 3, 1, 1, bias=True, groups=dim)
 
+        self.save_inter_flag=save_inter_flag
+        self.block=block
+        self.sub_idx=sub_idx
+
     def forward(self, x):
         B, C, H, W = x.shape
+        # Save X_0
+        if self.save_inter_flag:
+            save_inter(x.clone(), f'Block={self.block}-{self.sub_idx}-X_0')
+        
         x_patch_attn1 = self.patch_pool1(x)
         x_patch_attn2 = self.patch_pool2(x)
         x_patch_attn = x_patch_attn1 @ x_patch_attn2
+        
+        # Save Patch-wise pooling result X_1
+        if self.save_inter_flag:
+            save_inter(x_patch_attn.clone(), f'Block={self.block}-{self.sub_idx}-X_1')
+        
         x_patch_attn = self.proj0(x_patch_attn)
-
         x1 = x.contiguous().view(B, C, H * W).transpose(1, 2).contiguous().view(B, H * W, 32, -1)
         x_embdim_attn1 = self.embdim_pool1(x1)
         x_embdim_attn2 = self.embdim_pool2(x1)
         x_embdim_attn = x_embdim_attn1 @ x_embdim_attn2
 
-        x_embdim_attn = x_embdim_attn.contiguous().view(B, H * W, C).transpose(1, 2).contiguous().view(B, C, H, W)
-        x_embdim_attn = self.proj1(x_embdim_attn)
+        # Save embed-wise pooling result X_2
+        if self.save_inter_flag:
+            save_inter(x_embdim_attn.clone(), f'Block={self.block}-{self.sub_idx}-X_2')
 
+        x_embdim_attn = x_embdim_attn.contiguous().view(B, H * W, C).transpose(1, 2).contiguous().view(B, C, H, W)
+        
+        # Save reshaped embed-wise pooling result X_3
+        if self.save_inter_flag:
+            save_inter(x_embdim_attn.clone(), f'Block={self.block}-{self.sub_idx}-X_3')
+        
+        x_embdim_attn = self.proj1(x_embdim_attn)
         x_out = self.norm(x_patch_attn + x_embdim_attn)
         x_out = self.proj2(x_out)
         return x_out
@@ -185,13 +206,17 @@ class PoolFormerBlock(nn.Module):
     def __init__(self, dim, pool_size=3, mlp_ratio=4.,
                  act_layer=nn.GELU, norm_layer=GroupNorm,
                  drop=0., drop_path=0.,
-                 use_layer_scale=True, layer_scale_init_value=1e-5):
+                 use_layer_scale=True, layer_scale_init_value=1e-5, 
+                 save_inter_flag=False, block=None, sub_idx=None):
 
         super().__init__()
-
+        self.block = block
+        self.sub_idx = sub_idx
+        self.save_inter_flag = save_inter_flag
         self.norm1 = norm_layer(dim)
         # self.token_mixer = Pooling(pool_size=pool_size)
-        self.token_mixer = PoolAttn(dim=dim, norm_layer=norm_layer)
+        self.token_mixer = PoolAttn(dim=dim, norm_layer=norm_layer,
+                                    save_inter_flag=self.save_inter_flag, block=self.block, sub_idx=self.sub_idx)
         self.norm2 = norm_layer(dim)
         mlp_hidden_dim = int(dim * mlp_ratio)
         self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim,
@@ -209,12 +234,27 @@ class PoolFormerBlock(nn.Module):
 
     def forward(self, x):
         if self.use_layer_scale:
+            # Save X_in
+            if self.save_inter_flag:
+                save_inter(x.clone(), f"Block={self.block}-{self.sub_idx}_X_in")
+            
+            # Token mixing
             x = x + self.drop_path(
                 self.layer_scale_1.unsqueeze(-1).unsqueeze(-1)
                 * self.token_mixer(self.norm1(x)))
+            
+            # Save X_attn
+            if self.save_inter_flag:
+                save_inter(x.clone(), f"Block={self.block}-{self.sub_idx}_X_attn")
+            
+            # MLP
             x = x + self.drop_path(
                 self.layer_scale_2.unsqueeze(-1).unsqueeze(-1)
                 * self.mlp(self.norm2(x)))
+            
+            # Save X_out
+            if self.save_inter_flag:
+                save_inter(x.clone(), f"Block={self.block}-{self.sub_idx}_X_out")
         else:
             x = x + self.drop_path(self.token_mixer(self.norm1(x)))
             x = x + self.drop_path(self.mlp(self.norm2(x)))
@@ -441,6 +481,8 @@ class HR_stream(nn.Module):
 
         depth1 = layers[1]
         mlp_ratio1 = mlp_ratio[1]
+        save_inter_res = False
+
         dpr1 = [x.item() for x in torch.linspace(0, drop_path_rate, depth1)]
         self.patch_emb1 = PatchSplit(stride=2,
                                      in_chans=dim[1], embed_dim=dim[0])
@@ -448,7 +490,8 @@ class HR_stream(nn.Module):
                                                       act_layer=act_layer, norm_layer=norm_layer,
                                                       drop=drop_rate, drop_path=dpr1[i],
                                                       use_layer_scale=use_layer_scale,
-                                                      layer_scale_init_value=layer_scale_init_value)
+                                                      layer_scale_init_value=layer_scale_init_value,
+                                                      save_inter_flag=save_inter_res, block=1, sub_idx=i)
                                       for i in range(depth1)])
 
         depth2 = layers[2]
@@ -464,7 +507,8 @@ class HR_stream(nn.Module):
                                                       act_layer=act_layer, norm_layer=norm_layer,
                                                       drop=drop_rate, drop_path=dpr2[i],
                                                       use_layer_scale=use_layer_scale,
-                                                      layer_scale_init_value=layer_scale_init_value)
+                                                      layer_scale_init_value=layer_scale_init_value,
+                                                      save_inter_flag=save_inter_res, block=2, sub_idx=i)
                                       for i in range(depth2)])
 
         depth3 = layers[3]
@@ -482,7 +526,8 @@ class HR_stream(nn.Module):
                                                       act_layer=act_layer, norm_layer=norm_layer,
                                                       drop=drop_rate, drop_path=dpr3[i],
                                                       use_layer_scale=use_layer_scale,
-                                                      layer_scale_init_value=layer_scale_init_value)
+                                                      layer_scale_init_value=layer_scale_init_value,
+                                                      save_inter_flag=save_inter_res, block=3, sub_idx=i)
                                       for i in range(depth3)])
 
     def forward(self, x):
@@ -596,4 +641,9 @@ def load_pretrained_weights(model, checkpoint):
     return model
 
 
-
+def save_inter(tensor, name, output_dir='/home/jinxu/code/potter-pose-baseline/human_mesh_recovery/output/PAT_vis/inter_feature_map'):
+    arr = tensor.squeeze().cpu().detach().numpy()
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    output_dir = os.path.join(output_dir, name)
+    np.save(output_dir, arr)
