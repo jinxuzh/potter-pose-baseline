@@ -121,7 +121,7 @@ class ego4dDataset(Dataset):
 
         # Offset 3D kpts in camera by hand wrist
         curr_3d_kpts_cam = curr_db['joints_3d'].copy()
-        curr_3d_kpts_cam[np.any(curr_3d_kpts_cam==None, axis=1)] = 0
+        curr_3d_kpts_cam[np.any(np.isnan(curr_3d_kpts_cam), axis=1)] = 0
         # Make sure hand wrist stay unchanged
         curr_3d_kpts_cam = curr_3d_kpts_cam * 1000 # m to mm
         curr_3d_kpts_cam_offset = curr_3d_kpts_cam - curr_3d_kpts_cam[0]
@@ -180,9 +180,7 @@ class ego4dDataset(Dataset):
                 ]
             elif self.split == 'val':
                 available_curr_split_uid = [
-                    "6e5211e1-72d8-4032-ba56-b4095c0f2b36",
-                    "a8d04142-fc0b-4ad4-acaa-8c17424411ff",
-                    "e5beffc8-2cc5-4cc5-9e0e-b22b843aaa4c",
+                    "7014a547-6f84-48cb-bc91-28012c4cce06"
                 ]
 
         # Iterate through all takes from annotation directory and check
@@ -234,9 +232,12 @@ class ego4dDataset(Dataset):
                 start_idx, end_idx = self.num_joints*hand_idx, self.num_joints*(hand_idx+1)
                 one_hand_3d_kpts_world = curr_hand_3d_kpts[start_idx:end_idx]
                 # Skip this hand if the hand wrist (root) is None
-                if np.any(one_hand_3d_kpts_world[0] == None):
+                if np.any(np.isnan(one_hand_3d_kpts_world[0])):
                     continue
                 
+                # Hand biomechanical structure check for train and val
+                if self.split != 'test':
+                    one_hand_3d_kpts_world = joint_dist_angle_check(one_hand_3d_kpts_world)
                 # 3D world to camera (original view)
                 one_hand_3d_kpts_cam = world_to_cam(one_hand_3d_kpts_world, curr_extri)
                 # Camera original to original aria image plane
@@ -375,7 +376,7 @@ class ego4dDataset(Dataset):
                     else:
                         curr_frame_3d_kpts.append([None, None, None])
                         joints_view_stat.append(None)
-        return np.array(curr_frame_3d_kpts), np.array(joints_view_stat)
+        return np.array(curr_frame_3d_kpts).astype(np.float32), np.array(joints_view_stat)
 
 
     def load_frame_cam_pose(self, frame_idx, cam_pose):
@@ -403,7 +404,7 @@ class ego4dDataset(Dataset):
         """
         new_kpts = kpts.copy()
         # 1. Check missing annotation kpts
-        miss_anno_flag = np.any(kpts == None, axis=1)
+        miss_anno_flag = np.any(np.isnan(kpts), axis=1)
         new_kpts[miss_anno_flag] = 0
         # 2. Check out-bound annotation kpts
         x_out_bound = np.logical_or(new_kpts[:,0] < 0, new_kpts[:,0] >= self.undist_img_dim[1])
@@ -543,7 +544,7 @@ def aria_original_to_extracted(kpts, img_shape=(1408, 1408)):
     """
     # assert len(kpts.shape) == 2, "Only can rotate 2D arrays"
     H, _ = img_shape
-    none_idx = np.any(kpts == None, axis=1)
+    none_idx = np.any(np.isnan(kpts), axis=1)
     new_kpts = kpts.copy()
     new_kpts[~none_idx, 0] = H - kpts[~none_idx, 1] - 1
     new_kpts[~none_idx, 1] = kpts[~none_idx, 0]
@@ -649,7 +650,7 @@ def world_to_cam(kpts, extri):
     Output:
         new_kpts: (N,3)
     """
-    none_idx = np.any(kpts == None, axis=1)
+    none_idx = np.any(np.isnan(kpts), axis=1)
     new_kpts = kpts.copy()
     new_kpts[none_idx] = 0
     new_kpts = np.append(new_kpts, np.ones((new_kpts.shape[0], 1)), axis=1).T # (4,N)
@@ -665,7 +666,7 @@ def cam_to_img(kpts, intri):
     Output:
         new_kpts: (N,2)
     """
-    none_idx = np.any(kpts == None, axis=1)
+    none_idx = np.any(np.isnan(kpts), axis=1)
     new_kpts = kpts.copy()
     new_kpts[none_idx] = -1
     new_kpts = intri @ new_kpts.T # (3,N)
@@ -686,7 +687,7 @@ def affine_transform(kpts, trans):
     if trans.shape[0] == 2:
         trans = np.concatenate((trans, [[0,0,1]]), axis=0)
     new_kpts = kpts.copy()
-    none_idx = np.any(new_kpts==None, axis=1)
+    none_idx = np.any(np.isnan(new_kpts), axis=1)
     new_kpts[none_idx] = 0
     new_kpts = np.append(new_kpts, np.ones((new_kpts.shape[0], 1)), axis=1)
     new_kpts = (trans @ new_kpts.T).T
@@ -715,3 +716,73 @@ def xywh2xyxy(bbox):
     y2 = y1 + h
     return np.array([x1,y1,x2,y2])
 
+
+############# Joint distance threshold #############
+long_joint_dist_index = [4,8,12,16]
+joint_dist_min_threshold = np.full((20,), 0.002)
+joint_dist_min_threshold[long_joint_dist_index] = 0.06
+joint_dist_max_threshold = np.full((20,), 0.06)
+joint_dist_max_threshold[long_joint_dist_index] = 0.10
+
+############# Joint angle threshold #############
+joint_angle_min_threshold = np.array([100,90,90,
+                                      60,70,80,
+                                      60,70,80,
+                                      60,70,80,
+                                      60,70,80])
+joint_angle_max_threshold = np.array([180] * 15)
+
+wrist_conn_index = [1,5,9,13,17]
+joint_dist_index = list(range(1,21))
+joint_angle_index = [1, 2, 3, 5, 6, 7, 9,10,11,13,14,15,17,18,19]
+
+def unit_vector(vector):
+    """ Returns the unit vector of the vector.  """
+    return vector / np.linalg.norm(vector)
+
+def angle_between(v1, v2):
+    """ Returns the angle in radians between vectors 'v1' and 'v2'::
+    """
+    v1_u = unit_vector(v1)
+    v2_u = unit_vector(v2)
+    return np.arccos(np.clip(np.dot(v1_u, v2_u), -1.0, 1.0)) * 180.0 / np.pi
+
+def joint_dist_angle_check(curr_hand_pose3d):
+    """
+    Check hand biomechanical info: Distance and angle 
+    """
+    ###### Joint distance #######
+    joint_distance = []
+    for joint_idx in joint_dist_index:
+        if joint_idx in wrist_conn_index:
+            joint_distance.append(np.linalg.norm(curr_hand_pose3d[joint_idx][:3]-curr_hand_pose3d[0][:3]))
+        else:
+            joint_distance.append(np.linalg.norm(curr_hand_pose3d[joint_idx][:3]-curr_hand_pose3d[joint_idx-1][:3]))
+    joint_distance = np.array(joint_distance)
+    ###### Joint angle ######
+    joint_angle = []
+    for joint_idx in joint_angle_index:
+        # If current joint has pose3d estimation
+        if joint_idx in wrist_conn_index:
+            vec1 = curr_hand_pose3d[0, :3] - curr_hand_pose3d[joint_idx, :3]
+        else:
+            vec1 = curr_hand_pose3d[joint_idx-1, :3] - curr_hand_pose3d[joint_idx, :3]
+        vec2 = curr_hand_pose3d[joint_idx+1, :3] - curr_hand_pose3d[joint_idx, :3]
+        # Compute angle
+        joint_angle.append(angle_between(vec1, vec2))
+    joint_angle = np.array(joint_angle)
+    
+    # Filter invalid joints from valid joints (vis_flag)
+    invalid_dist_flag = np.logical_or(joint_distance < joint_dist_min_threshold,
+                                    joint_distance > joint_dist_max_threshold)
+    invalid_dist_flag_ = np.full((21,), False)
+    invalid_dist_flag_[joint_dist_index] = invalid_dist_flag
+
+    invalid_angle_flag = np.logical_or(joint_angle < joint_angle_min_threshold,
+                                    joint_angle > joint_angle_max_threshold)
+    invalid_angle_flag_ = np.full((21,), False)
+    invalid_angle_flag_[joint_angle_index] = invalid_angle_flag
+
+    invalid_flag = np.logical_or(invalid_dist_flag_, invalid_angle_flag_)
+    curr_hand_pose3d[invalid_flag] = None
+    return curr_hand_pose3d
