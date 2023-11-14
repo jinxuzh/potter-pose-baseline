@@ -45,6 +45,7 @@ class ego4dDataset(Dataset):
         self.takes_df = pd.read_csv(os.path.join(self.dataset_root, 'annotations/egoexo_split_latest_train_val_test.csv'))
         self.split_take_dict = self.init_split()
         self.curr_split_take = []
+        self.cnt = 0
         self.db = self.load_raw_data()
         
         self.transform = transform
@@ -90,68 +91,85 @@ class ego4dDataset(Dataset):
                                     [26.476702, 34.7448  , 20.027615],
                                     [31.811651, 37.06962 , 27.742807],
                                     [36.893555, 38.98199 , 36.001797]])
+    
 
+    def get_data_by_subject(self):
+        all_input = []      # (N_take, F, 3, 224, 224)
+        all_gt_pose3d = []  # (N_take, F, 21, 3)
+        all_vis_flag = []   # (N_take, F, 21)
+        all_hand_wrist = [] # (N_take, F, 3)
+        all_intri = []      # (N_take, F, 3, 3)
+        all_trans = []      # (N_take, F, 3, 3)
+        all_take = []       # (N_take,)
+        all_meta = []       # (N_take,) ~ (F,) Dict
+        for take_name, take_data in self.db.items():
+            if len(take_data) == 0:
+                continue
+            curr_input = []
+            curr_gt_pose3d = []
+            curr_vis_flag = []
+            curr_hand_wrist = []
+            curr_intri = []
+            curr_trans = []
+            curr_meta = []
+            for curr_db in take_data:
+                ### Input image 
+                img_path = curr_db['image_path']
+                img = imageio.imread(img_path, pilmode='RGB')
+                c, s = curr_db['center'], curr_db['scale']
+                r = 0
+                trans = get_affine_transform(c, s, r, self.image_size)
+                input = cv2.warpAffine(
+                    img,
+                    trans,
+                    (int(self.image_size[0]), int(self.image_size[1])),
+                    flags=cv2.INTER_LINEAR)
+                # Apply transformation to input images
+                if self.transform:
+                    input = self.transform(input)
 
-    def __getitem__(self, idx):
-        """
-        Return transformed images, 2D heatmap, offset 3D GT, target_weight and metadata
-        """
-        curr_db = copy.deepcopy(self.db[idx])
-        # Load in undistorted Aria images in extracted view
-        img_path = curr_db['image_path']
-        img = imageio.imread(img_path, pilmode='RGB')
+                ### Input of GT-pose3d
+                curr_3d_kpts_cam = curr_db['joints_3d'].copy()
+                curr_3d_kpts_cam[np.any(np.isnan(curr_3d_kpts_cam), axis=1)] = 0
+                # Make sure hand wrist stay unchanged
+                curr_3d_kpts_cam = curr_3d_kpts_cam * 1000 # m to mm
+                curr_3d_kpts_cam_offset = curr_3d_kpts_cam - curr_3d_kpts_cam[0]
+                # Normalization
+                curr_3d_kpts_cam_offset = (curr_3d_kpts_cam_offset - self.joint_mean) / (self.joint_std + 1e-8)
+                curr_3d_kpts_cam_offset[~curr_db['valid_flag']] = None
+                curr_3d_kpts_cam_offset = torch.from_numpy(curr_3d_kpts_cam_offset.astype(np.float32))
 
-        # Affine transformation s.t. hand in center of image
-        # TODO: Add data augmentation in training (with random flipping and scale factor)
-        c, s = curr_db['center'], curr_db['scale']
-        r = 0
-        trans = get_affine_transform(c, s, r, self.image_size)
-        input = cv2.warpAffine(
-            img,
-            trans,
-            (int(self.image_size[0]), int(self.image_size[1])),
-            flags=cv2.INTER_LINEAR)
-        # Apply transformation to input images
-        if self.transform:
-            input = self.transform(input)
-        # Affine transformation to 2D hand kpts
-        curr_2d_kpts = curr_db['joints_2d']
-        curr_2d_kpts = affine_transform(curr_2d_kpts, trans)
-        curr_2d_kpts = torch.from_numpy(curr_2d_kpts.astype(np.float32))
+                ### Vis-flag
+                vis_flag = torch.from_numpy(curr_db['valid_flag'])
 
-        # Offset 3D kpts in camera by hand wrist
-        curr_3d_kpts_cam = curr_db['joints_3d'].copy()
-        curr_3d_kpts_cam[np.any(np.isnan(curr_3d_kpts_cam), axis=1)] = 0
-        # Make sure hand wrist stay unchanged
-        curr_3d_kpts_cam = curr_3d_kpts_cam * 1000 # m to mm
-        curr_3d_kpts_cam_offset = curr_3d_kpts_cam - curr_3d_kpts_cam[0]
-        # Normalization
-        curr_3d_kpts_cam_offset = (curr_3d_kpts_cam_offset - self.joint_mean) / (self.joint_std + 1e-8)
-        curr_3d_kpts_cam_offset[~curr_db['valid_flag']] = None
-        curr_3d_kpts_cam_offset = torch.from_numpy(curr_3d_kpts_cam_offset.astype(np.float32))
+                ### Append result
+                curr_input.append(input)
+                curr_gt_pose3d.append(curr_3d_kpts_cam_offset)
+                curr_vis_flag.append(vis_flag)
+                curr_intri.append(torch.from_numpy(curr_db['intrinsic'].astype(np.float32)))
+                curr_hand_wrist.append(torch.from_numpy(curr_db['joints_3d'][0].astype(np.float32)))
+                curr_trans.append(torch.from_numpy(trans))
+                curr_meta.append(curr_db['image_path'])
 
-        # Generate 2D heatmap and corresponding weight
-        vis_flag = torch.from_numpy(curr_db['valid_flag'])
-        hm_2d, target_weight = self.generate_heatmap(curr_2d_kpts, vis_flag)
-        hm_2d = torch.from_numpy(hm_2d)
-        target_weight = torch.from_numpy(target_weight)
-
-        # Record meta info for later reprojection
-        meta = {
-            "hand_wrist": torch.from_numpy(curr_db['joints_3d'][0].astype(np.float32)),
-            "intrinsic": torch.from_numpy(curr_db['intrinsic'].astype(np.float32)),
-            "joint_view_stat": torch.from_numpy(curr_db['joint_view_stat'].astype(np.float64)),
-        }
-
-        return input, curr_2d_kpts, hm_2d, target_weight, curr_3d_kpts_cam_offset, vis_flag, meta
+            # Append into all output
+            all_input.append(torch.stack(curr_input))
+            all_gt_pose3d.append(torch.stack(curr_gt_pose3d))
+            all_vis_flag.append(torch.stack(curr_vis_flag))
+            all_hand_wrist.append(torch.stack(curr_hand_wrist))
+            all_intri.append(torch.stack(curr_intri))
+            all_trans.append(torch.stack(curr_trans))
+            all_take.append(take_name)
+            all_meta.append(curr_meta)
+    
+        return all_input, all_gt_pose3d, all_vis_flag, all_hand_wrist, all_intri, all_trans, all_take, all_meta
 
 
     def __len__(self,):
-        return len(self.db)
+        return len(self.cnt)
     
 
     def load_raw_data(self):
-        gt_db = []
+        gt_db = {}
 
         if not self.use_preset:
             # Based on split uids, found local take uids that has annotation
@@ -207,17 +225,21 @@ class ego4dDataset(Dataset):
             # Get valid takes info for all frames
             if len(curr_take_anno) > 0 and len(curr_take_anno) <= len(curr_take_cam_pose):
                 _, _, aria_mask = self.load_aria_calib(curr_take_name)
-                gt_db.extend(self.load_take_raw_data(curr_take_name, 
+                curr_take_data = self.load_take_raw_data(curr_take_name, 
                                                      curr_take_anno, 
                                                      curr_take_cam_pose,
                                                      curr_take_img_dir,
                                                      aria_mask,
-                                                     curr_take_hand_bbox))
+                                                     curr_take_hand_bbox)
+                for hand_name, data in curr_take_data.items():
+                    sub_take_name = f"{curr_take_name}_{hand_name}"
+                    gt_db[sub_take_name] = data
+                    self.cnt += len(data)
         return gt_db
 
     
     def load_take_raw_data(self, take_name, anno, cam_pose, img_root_dir, aria_mask, curr_take_hand_bbox):
-        curr_take_db = []
+        curr_take_db = {'right':[], 'left':[]}
 
         for frame_idx, curr_frame_anno in anno.items():
             # Load in current frame's 2D & 3D annotation and camera parameter
@@ -268,7 +290,7 @@ class ego4dDataset(Dataset):
                     center, scale = xyxy2cs(*one_hand_bbox, self.undist_img_dim, self.pixel_std)
                     # Write into db
                     img_path = os.path.join(img_root_dir, f"{int(frame_idx):06d}.jpg")
-                    curr_take_db.append({
+                    curr_take_db[hand_name].append({
                         'image_path': img_path,
                         'center': center,
                         'scale': scale,
@@ -721,8 +743,8 @@ def xywh2xyxy(bbox):
 long_joint_dist_index = [4,8,12,16]
 joint_dist_min_threshold = np.full((20,), 0.002)
 joint_dist_min_threshold[long_joint_dist_index] = 0.06
-joint_dist_max_threshold = np.full((20,), 0.06)
-joint_dist_max_threshold[long_joint_dist_index] = 0.10
+joint_dist_max_threshold = np.full((20,), 0.08)
+joint_dist_max_threshold[long_joint_dist_index] = 0.12
 
 ############# Joint angle threshold #############
 joint_angle_min_threshold = np.array([100,90,90,
