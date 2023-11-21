@@ -17,6 +17,7 @@ from hybrik.utils.vis import save_debug_images
 from hybrik.utils.evaluate import accuracy
 from hybrik.datasets.ego4d_dataset import ego4dDataset
 from hybrik.utils.option import parse_args_function
+from hybrik.datasets.generators import testChunkedGenerator
 
 
 def main(args):
@@ -39,45 +40,49 @@ def main(args):
         transforms.Normalize(mean=[0.485, 0.456, 0.406],
                              std=[0.229, 0.224, 0.225])
     ])
-    valid_dataset = ego4dDataset(cfg, 
+    test_dataset = ego4dDataset(cfg, 
                                  anno_type=args.anno_type, 
                                  split='test', 
                                  transform=transform,
                                  use_preset=args.use_preset)
-    # Dataloader
-    valid_loader = torch.utils.data.DataLoader(
-        valid_dataset,
-        batch_size=1,
-        shuffle=False,
-        num_workers=cfg.WORKERS,
-        pin_memory=True
-    )
-    print(f'Number of used takes: {len(valid_dataset.curr_split_take)}')
+    ##################################
+    receptive_field = cfg.MODEL.RECEPTIVE_FIELD
+    pad = (receptive_field - 1) // 2 # Padding on each side
+    test_batch_size = 1
+    stride = 1
+    ##################################
+    # val dataloader
+    input_val, gt_pose3d_val, vis_flag_val, hand_wrist_val, _, _, _, _ = test_dataset.get_data_by_subject()
+    test_generator = testChunkedGenerator(test_batch_size//stride, input_val, gt_pose3d_val, vis_flag_val, hand_wrist_val,
+                                      stride, pad=pad, seq_to_one=True, shuffle=False)
+    
+    print(f'Number of used takes: {len(test_dataset.curr_split_take)}')
 
     ######### Inferece #########
     epoch_loss_3d_pos = AverageMeter()
     epoch_loss_3d_pos_procrustes = AverageMeter()
 
     with torch.no_grad():
-        valid_loader = tqdm(valid_loader, dynamic_ncols=True)
-        for i, (input, _, _, _, pose_3d_gt, vis_flag, meta) in enumerate(valid_loader):
-            # Pose 3D prediction
-            input = input.to(device)
-            _, pose_3d_pred = model(input)
+        for batch_input, batch_3d_gt, batch_vis_flag, batch_hand_wrist in tqdm(test_generator.next_epoch(), total=test_generator.num_batches): # (1,F,3,224,224) (1,1,21,3) (1,1,21)
+            # compute output
+            input = batch_input.to(device)
+            _, pose_3d_pred = model(input) # (1,21,3)
 
             # Unnormalize predicted and GT pose 3D kpts
             pred_3d_pts = pose_3d_pred.cpu().detach().numpy()
-            pred_3d_pts = pred_3d_pts * valid_dataset.joint_std + valid_dataset.joint_mean
-            gt_3d_kpts = pose_3d_gt.cpu().detach().numpy()
-            gt_3d_kpts = gt_3d_kpts * valid_dataset.joint_std + valid_dataset.joint_mean
-            # Add hand wrist
-            B, D = meta['hand_wrist'].shape
-            hand_wrist_kpts = meta['hand_wrist'].view(B,1,D).expand(B,21,D)
+            pred_3d_pts = pred_3d_pts * test_dataset.joint_std + test_dataset.joint_mean
+            gt_3d_kpts = batch_3d_gt.squeeze(1).cpu().detach().numpy()
+            gt_3d_kpts = gt_3d_kpts * test_dataset.joint_std + test_dataset.joint_mean # (1,21,3)
+
+            # TODO: Add hand wrist in chunk generator   
+            B, D = batch_3d_gt.shape[0], batch_3d_gt.shape[-1]
+            hand_wrist_kpts = batch_hand_wrist.view(B,1,D).expand(B,21,D)
             hand_wrist_kpts = hand_wrist_kpts.cpu().detach().numpy()
             pred_3d_pts = (pred_3d_pts + hand_wrist_kpts*1000)
             gt_3d_kpts = (gt_3d_kpts + hand_wrist_kpts*1000)
 
             # Compute MPJPE
+            vis_flag = batch_vis_flag.squeeze(1).to(bool)
             valid_pred_3d_kpts = torch.from_numpy(pred_3d_pts)
             valid_pred_3d_kpts = valid_pred_3d_kpts[vis_flag].view(1,-1,3)
             valid_pose_3d_gt = torch.from_numpy(gt_3d_kpts)

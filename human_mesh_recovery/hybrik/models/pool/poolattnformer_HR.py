@@ -25,6 +25,7 @@ from timm.models.layers import DropPath, trunc_normal_
 from timm.models.registry import register_model
 from timm.models.layers.helpers import to_2tuple
 
+from einops import rearrange, repeat
 
 class PatchEmbed(nn.Module):
     """
@@ -101,13 +102,16 @@ class PoolAttn(nn.Module):
     --pool_size: pooling size
     """
 
-    def __init__(self, dim=256, norm_layer=GroupNorm, save_inter_flag=False, block=None, sub_idx=None):
+    def __init__(self, dim=256, norm_layer=GroupNorm, save_inter_flag=False, embed_pool_dim_ratio=1, block=None, sub_idx=None):
         super().__init__()
         self.patch_pool1 = nn.AdaptiveAvgPool2d((None, 4))
         self.patch_pool2 = nn.AdaptiveAvgPool2d((4, None))
 
-        self.embdim_pool1 = nn.AdaptiveAvgPool2d((None, 4))
-        self.embdim_pool2 = nn.AdaptiveAvgPool2d((4, None))
+        # Modify embed-wise pooling dimension to be base_value * embed_pool_dim_ratio, 
+        # where base_value is 4 as original implementation
+        embed_pool_dim = 4 * embed_pool_dim_ratio
+        self.embdim_pool1 = nn.AdaptiveAvgPool2d((None, embed_pool_dim))
+        self.embdim_pool2 = nn.AdaptiveAvgPool2d((embed_pool_dim, None))
 
         # self.act = act_layer()
         self.norm = norm_layer(dim)
@@ -207,7 +211,8 @@ class PoolFormerBlock(nn.Module):
                  act_layer=nn.GELU, norm_layer=GroupNorm,
                  drop=0., drop_path=0.,
                  use_layer_scale=True, layer_scale_init_value=1e-5, 
-                 save_inter_flag=False, block=None, sub_idx=None):
+                 save_inter_flag=False, block=None, sub_idx=None,
+                 embed_pool_dim_ratio=1):
 
         super().__init__()
         self.block = block
@@ -216,7 +221,8 @@ class PoolFormerBlock(nn.Module):
         self.norm1 = norm_layer(dim)
         # self.token_mixer = Pooling(pool_size=pool_size)
         self.token_mixer = PoolAttn(dim=dim, norm_layer=norm_layer,
-                                    save_inter_flag=self.save_inter_flag, block=self.block, sub_idx=self.sub_idx)
+                                    save_inter_flag=self.save_inter_flag, block=self.block, sub_idx=self.sub_idx,
+                                    embed_pool_dim_ratio=embed_pool_dim_ratio)
         self.norm2 = norm_layer(dim)
         mlp_hidden_dim = int(dim * mlp_ratio)
         self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim,
@@ -301,6 +307,7 @@ class PoolAttnFormer(nn.Module):
                  fork_feat=False,
                  init_cfg=None,
                  pretrained=None,
+                 add_pos_en=False,
                  **kwargs):
 
         super().__init__()
@@ -312,6 +319,7 @@ class PoolAttnFormer(nn.Module):
         self.patch_embed = PatchEmbed(
             patch_size=in_patch_size, stride=in_stride, padding=in_pad,
             in_chans=3, embed_dim=embed_dims[0])
+        self.add_pos_en = add_pos_en
 
         # set the main block in network
         network = []
@@ -418,8 +426,14 @@ class PoolAttnFormer(nn.Module):
         self.head = nn.Linear(
             self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
 
+    def generate_pos_encoding(self):
+        # TODO: Implement positional encoding
+        return None
+
     def forward_embeddings(self, x):
         x = self.patch_embed(x)
+        if self.add_pos_en:
+            x = x + self.generate_pos_encoding()
         return x
 
     def forward_tokens(self, x):
@@ -474,7 +488,8 @@ class HR_stream(nn.Module):
     def __init__(self, dim, layers, mlp_ratio,
                  act_layer=nn.GELU, norm_layer=GroupNorm,
                  drop_rate=.0, drop_path_rate=0.,
-                 use_layer_scale=True, layer_scale_init_value=1e-5):
+                 use_layer_scale=True, layer_scale_init_value=1e-5, 
+                 receptive_field=None, hr_embed_pool_dim_ratio=1):
         super().__init__()
         layers = [2, 2, 2, 4]
         mlp_ratio = [2, 2, 2, 4]
@@ -483,15 +498,19 @@ class HR_stream(nn.Module):
         mlp_ratio1 = mlp_ratio[1]
         save_inter_res = False
 
+        self.f = receptive_field
+        self.hr_embed_pool_dim_ratio = hr_embed_pool_dim_ratio
+
         dpr1 = [x.item() for x in torch.linspace(0, drop_path_rate, depth1)]
         self.patch_emb1 = PatchSplit(stride=2,
                                      in_chans=dim[1], embed_dim=dim[0])
-        self.Block1 = nn.Sequential(*[PoolFormerBlock(dim[0], mlp_ratio=mlp_ratio1,
+        self.Block1 = nn.Sequential(*[PoolFormerBlock(dim[0]*self.f, mlp_ratio=mlp_ratio1,
                                                       act_layer=act_layer, norm_layer=norm_layer,
                                                       drop=drop_rate, drop_path=dpr1[i],
                                                       use_layer_scale=use_layer_scale,
                                                       layer_scale_init_value=layer_scale_init_value,
-                                                      save_inter_flag=save_inter_res, block=1, sub_idx=i)
+                                                      save_inter_flag=save_inter_res, block=1, sub_idx=i,
+                                                      embed_pool_dim_ratio=self.hr_embed_pool_dim_ratio)
                                       for i in range(depth1)])
 
         depth2 = layers[2]
@@ -503,12 +522,13 @@ class HR_stream(nn.Module):
             PatchSplit(stride=2,
                        in_chans=dim[1], embed_dim=dim[0]),
         )
-        self.Block2 = nn.Sequential(*[PoolFormerBlock(dim[0], mlp_ratio=mlp_ratio2,
+        self.Block2 = nn.Sequential(*[PoolFormerBlock(dim[0]*self.f, mlp_ratio=mlp_ratio2,
                                                       act_layer=act_layer, norm_layer=norm_layer,
                                                       drop=drop_rate, drop_path=dpr2[i],
                                                       use_layer_scale=use_layer_scale,
                                                       layer_scale_init_value=layer_scale_init_value,
-                                                      save_inter_flag=save_inter_res, block=2, sub_idx=i)
+                                                      save_inter_flag=save_inter_res, block=2, sub_idx=i,
+                                                      embed_pool_dim_ratio=self.hr_embed_pool_dim_ratio)
                                       for i in range(depth2)])
 
         depth3 = layers[3]
@@ -522,31 +542,32 @@ class HR_stream(nn.Module):
             PatchSplit(stride=2,
                        in_chans=dim[1], embed_dim=dim[0]),
         )
-        self.Block3 = nn.Sequential(*[PoolFormerBlock(dim[0], mlp_ratio=mlp_ratio3,
+        self.Block3 = nn.Sequential(*[PoolFormerBlock(dim[0]*self.f, mlp_ratio=mlp_ratio3,
                                                       act_layer=act_layer, norm_layer=norm_layer,
                                                       drop=drop_rate, drop_path=dpr3[i],
                                                       use_layer_scale=use_layer_scale,
                                                       layer_scale_init_value=layer_scale_init_value,
-                                                      save_inter_flag=save_inter_res, block=3, sub_idx=i)
+                                                      save_inter_flag=save_inter_res, block=3, sub_idx=i,
+                                                      embed_pool_dim_ratio=self.hr_embed_pool_dim_ratio)
                                       for i in range(depth3)])
 
     def forward(self, x):
-        x0 = x[0]
+        x0 = rearrange(x[0], '(b f) d h w -> b (f d) h w', f=self.f) # (B*f, D, H, W)
         x1 = x[1]
         x2 = x[2]
         x3 = x[3]
 
         each_HR_stage = []
 
-        x1_new = self.patch_emb1(x1) + x0
+        x1_new = rearrange(self.patch_emb1(x1), '(b f) d h w -> b (f d) h w', f=self.f) + x0
         x1_new = self.Block1(x1_new)
         each_HR_stage.append(x1_new.clone())
 
-        x2_new = self.patch_emb2(x2) + x1_new
+        x2_new = rearrange(self.patch_emb2(x2), '(b f) d h w -> b (f d) h w', f=self.f) + x1_new
         x2_new = self.Block2(x2_new)
         each_HR_stage.append(x2_new.clone())
 
-        x3_new = self.patch_emb3(x3) + x2_new
+        x3_new = rearrange(self.patch_emb3(x3), '(b f) d h w -> b (f d) h w', f=self.f) + x2_new
         x3_new = self.Block3(x3_new)
         each_HR_stage.append(x3_new.clone())
 
@@ -563,23 +584,28 @@ class PoolAttnFormer_hr(nn.Module):
                  norm_layer=GroupNorm, act_layer=nn.GELU,
                  drop_rate=0.1, drop_path_rate=0.1,
                  use_layer_scale=True, layer_scale_init_value=1e-5,
-                 pretrained=None,
-                 **kwargs):
+                 pretrained=None, receptive_field=None, add_pos_en=False,
+                 hr_embed_pool_dim_ratio=1, **kwargs):
 
         super().__init__()
 
         self.num_classes = num_classes
+        self.receptive_field = receptive_field
+        self.hr_embed_pool_dim_ratio = hr_embed_pool_dim_ratio
 
         self.poolattn_cls = PoolAttnFormer(layers, embed_dims=embed_dims,
                                            downsamples=[True, True, True, True], mlp_ratios=mlp_ratios,
-                                           drop_rate=drop_rate, drop_path_rate=drop_path_rate, fork_feat=True, )
+                                           drop_rate=drop_rate, drop_path_rate=drop_path_rate, fork_feat=True, 
+                                           add_pos_en=add_pos_en)
 
         self.stage1 = HR_stream(embed_dims, layers, mlp_ratio=mlp_ratios,
                                 act_layer=act_layer, norm_layer=norm_layer, drop_rate=drop_rate,
                                 drop_path_rate=drop_path_rate, use_layer_scale=use_layer_scale,
-                                layer_scale_init_value=layer_scale_init_value)
+                                layer_scale_init_value=layer_scale_init_value, 
+                                receptive_field=self.receptive_field, 
+                                hr_embed_pool_dim_ratio=self.hr_embed_pool_dim_ratio)
 
-        self.norm0 = norm_layer(embed_dims[0])
+        self.norm0 = norm_layer(embed_dims[0]*self.receptive_field)
         self.norm3 = norm_layer(embed_dims[3])
 
         img_size = [img_size[1], img_size[0]]
@@ -603,6 +629,8 @@ class PoolAttnFormer_hr(nn.Module):
 
 
     def forward(self, x):
+        # Rearrange x from (B, f, C, H, W) -> (B*f, C, H, W)
+        x = rearrange(x, 'b f c h w -> (b f) c h w')
         # through backbone
         x = self.poolattn_cls(x)
         x3_new, x3, each_HR_stage = self.stage1(x)

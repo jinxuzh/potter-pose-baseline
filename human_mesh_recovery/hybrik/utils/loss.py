@@ -34,25 +34,14 @@ class Pose3DLoss(nn.Module):
     def __init__(self):
         super(Pose3DLoss, self).__init__()
 
-    def forward(self, hm_pred, hm_gt, pose_3d_pred, pose_3d_gt, vis_flag):
-        # Flatten heatmap along spatial dimension
-        assert hm_pred.shape == hm_gt.shape and len(hm_pred.shape) == 4 # (N, K, H, W)
-        batch_size, num_joints = hm_pred.shape[:2]
-        heatmaps_pred = hm_pred.reshape(batch_size, num_joints, -1)
-        heatmaps_gt = hm_gt.reshape(batch_size, num_joints, -1)
-
-        # Compute MSE loss between pred and gt 2D heatmap for only visible kpts
-        hm_diff = heatmaps_pred - heatmaps_gt
-        hm_loss = torch.mean(hm_diff**2, axis=2) * vis_flag
-        hm_loss = torch.sum(hm_loss) / torch.sum(vis_flag)
-
+    def forward(self, pose_3d_pred, pose_3d_gt, vis_flag):
         # Compute MSE loss between pred and gt 3D hand joints for only visible kpts
         assert pose_3d_pred.shape == pose_3d_gt.shape and len(pose_3d_pred.shape) == 3 # (N, K, dim)
         pose_3d_diff = pose_3d_pred - pose_3d_gt
         pose_3d_loss = torch.mean(pose_3d_diff**2, axis=2) * vis_flag
         pose_3d_loss = torch.sum(pose_3d_loss) / torch.sum(vis_flag)
 
-        return hm_loss, pose_3d_loss
+        return pose_3d_loss
     
 
 def mpjpe(predicted, target):

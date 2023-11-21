@@ -36,18 +36,26 @@ class PoolAttnHR_Pose_3D(nn.Module):
 
         self.height_dim = kwargs['EXTRA']['HEATMAP_SIZE'][0]
         self.width_dim = kwargs['EXTRA']['HEATMAP_SIZE'][1]
+        self.receptive_field = kwargs['RECEPTIVE_FIELD']
+
+        # TODO: Add positional encoding; Merge into config file
+        self.add_pos_encoding = False
+        self.hr_embed_pool_dim_ratio = self.receptive_field
 
         # backbone: POTTER block pretrained with image size of [256,256]
         img_size = [self.img_H, self.img_W]
         self.poolattnformer_pose = PoolAttnFormer_hr(img_size, layers=self.layers, embed_dims=self.embed_dims,
                                                mlp_ratios=self.mlp_ratios, drop_rate=self.drop_rate,
-                                               drop_path_rate=self.drop_path_rate,
-                                               use_layer_scale=True, layer_scale_init_value=1e-5,)
+                                               drop_path_rate=self.drop_path_rate, use_layer_scale=True, 
+                                               layer_scale_init_value=1e-5, 
+                                               receptive_field=self.receptive_field,
+                                               add_pos_en=self.add_pos_encoding, 
+                                               hr_embed_pool_dim_ratio=self.hr_embed_pool_dim_ratio)
 
         ######### 2D pose head #########
         self.norm1 = GroupNorm(256)
         self.up_sample = nn.Sequential(
-            nn.Conv2d(self.embed_dims[0], 256, 1),
+            nn.Conv2d(self.embed_dims[0]*self.receptive_field, 256, 1),
             nn.GELU(),
         )
         self.final_layer = nn.Conv2d(
@@ -90,7 +98,7 @@ class PoolAttnHR_Pose_3D(nn.Module):
 
     def forward(self, x):
         # Forward through all branches
-        x_feature, _, _ = self.poolattnformer_pose(x) # feature_map: [N, 64, H_feat, W_feat]
+        x_feature, _, _ = self.poolattnformer_pose(x) # feature_map: [N, 64*f, H_feat, W_feat]
 
         # 2D pose head
         out = self.up_sample(x_feature) # [N, 256, H_feat, W_feat]

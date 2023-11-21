@@ -20,30 +20,28 @@ from hybrik.utils.vis import save_debug_images
 from hybrik.utils.evaluate import accuracy
 from hybrik.datasets.ego4d_dataset import ego4dDataset
 from hybrik.utils.option import parse_args_function
+from hybrik.datasets.generators import ChunkedGenerator
 
 
 def train(config, train_loader, model, criterion, optimizer, epoch, output_dir, device, logger, writer_dict):
-    loss_2d = AverageMeter()
-    loss_3d = AverageMeter()
     total_loss = AverageMeter()
-    acc = AverageMeter()
 
     # switch to train mode
     model.train()
-    train_loader = tqdm(train_loader, dynamic_ncols=True)
-    print_interval = len(train_loader) // config.TRAIN_PRINT_NUM
+    print_interval = train_loader.num_batches // config.TRAIN_PRINT_NUM
 
-    for i, (input, pose_2d_gt, hm_gt, target_weight, pose_3d_gt, vis_flag, _) in enumerate(train_loader):
+    for i, (batch_input, batch_3d_gt, batch_vis_flag) in tqdm(enumerate(train_loader.next_epoch()), 
+                                                              total=train_loader.num_batches):
         # compute output
-        input = input.to(device)
-        hm_pred, pose_3d_pred = model(input)
-        hm_gt = hm_gt.to(device)
-        # Assign None kpts as zero
-        pose_3d_gt[~vis_flag] = 0
-        pose_3d_gt = pose_3d_gt.to(device)
-        vis_flag = vis_flag.to(device)
+        input = batch_input.to(device)
+        _, pose_3d_pred = model(input)
 
-        hm_loss, pose_3d_loss = criterion(hm_pred, hm_gt, pose_3d_pred, pose_3d_gt, vis_flag)
+        # Assign None kpts as zero
+        batch_3d_gt[~batch_vis_flag.to(bool)] = 0
+        batch_3d_gt = batch_3d_gt.to(device)
+        batch_vis_flag = batch_vis_flag.to(device)
+
+        pose_3d_loss = criterion(pose_3d_pred, batch_3d_gt.squeeze(1), batch_vis_flag.squeeze(1))
         loss = pose_3d_loss #hm_loss + pose_3d_loss
 
         # compute gradient and do update step
@@ -52,24 +50,13 @@ def train(config, train_loader, model, criterion, optimizer, epoch, output_dir, 
         optimizer.step()
 
         # measure accuracy and record loss
-        # loss_2d.update(hm_loss.item())
-        loss_3d.update(pose_3d_loss.item())
         total_loss.update(loss.item())
-
-        # # Caculate 2D PCK as accuracy
-        # _, avg_acc, cnt, pred = accuracy(hm_pred.detach().cpu().numpy(),
-        #                                  hm_gt.detach().cpu().numpy())
-        # acc.update(avg_acc, cnt)
 
         # Log info
         if (i+1) % print_interval == 0:
             msg = 'Epoch: [{0}][{1}/{2}]\t' \
-                  '2D Loss {loss_2d.val:.5f} ({loss_2d.avg:.5f})\t' \
-                  '3D Loss {loss_3d.val:.5f} ({loss_3d.avg:.5f})\t' \
-                  'Total loss {total_loss.val:.5f} ({total_loss.avg:.5f})\t' \
-                  '2D PCK Accuracy {acc.val:.3f} ({acc.avg:.3f})'.format(
-                      epoch, i+1, len(train_loader),
-                      loss_2d=loss_2d, loss_3d=loss_3d, total_loss=total_loss, acc=acc)
+                  'Total loss {total_loss.val:.5f} ({total_loss.avg:.5f})'.format(
+                      epoch, i+1, train_loader.num_batches, total_loss=total_loss)
             logger.info(msg)
 
             if writer_dict:
@@ -78,58 +65,37 @@ def train(config, train_loader, model, criterion, optimizer, epoch, output_dir, 
                 writer.add_scalar('Loss/train', total_loss.avg, global_steps)
                 writer_dict['train_global_steps'] = global_steps + 1
 
-            # # Save debug images
-            # prefix = '{}_{}'.format(os.path.join(output_dir, 'train'), i+1)
-            # debug_pose_2d_gt = pose_2d_gt.clone()
-            # debug_pose_2d_gt[~vis_flag] = 0
-            # meta = {'joints': debug_pose_2d_gt, 
-            #         "joints_vis": target_weight}
-            # save_debug_images(config, input.cpu(), meta, hm_gt.cpu(), pred*4, hm_pred.cpu(), prefix)
     return total_loss.avg
 
 
 def validate(config, val_loader, model, criterion, output_dir, device, logger, writer_dict):
-    loss_2d = AverageMeter()
-    loss_3d = AverageMeter()
     total_loss = AverageMeter()
-    acc = AverageMeter()
 
     # switch to evaluate mode
     model.eval()
 
     with torch.no_grad():
-        val_loader = tqdm(val_loader, dynamic_ncols=True)
-        for i, (input, pose_2d_gt, hm_gt, target_weight, pose_3d_gt, vis_flag, _) in enumerate(val_loader):
+        for i, (batch_input, batch_3d_gt, batch_vis_flag) in tqdm(enumerate(val_loader.next_epoch()),
+                                                                  total=val_loader.num_batches):
             # compute output
-            input = input.to(device)
-            hm_pred, pose_3d_pred = model(input)
-            hm_gt = hm_gt.to(device)
-            # Assign None kpts as zero
-            pose_3d_gt[~vis_flag] = 0
-            pose_3d_gt = pose_3d_gt.to(device)
-            vis_flag = vis_flag.to(device)
+            input = batch_input.to(device)
+            _, pose_3d_pred = model(input)
 
-            hm_loss, pose_3d_loss = criterion(hm_pred, hm_gt, pose_3d_pred, pose_3d_gt, vis_flag)
+            # Assign None kpts as zero
+            batch_3d_gt[~batch_vis_flag.to(bool)] = 0
+            batch_3d_gt = batch_3d_gt.to(device)
+            batch_vis_flag = batch_vis_flag.to(device)
+
+            pose_3d_loss = criterion(pose_3d_pred, batch_3d_gt.squeeze(1), batch_vis_flag.squeeze(1))
             loss = pose_3d_loss #hm_loss + pose_3d_loss
 
             # measure accuracy and record loss
-            # loss_2d.update(hm_loss.item())
-            loss_3d.update(pose_3d_loss.item())
             total_loss.update(loss.item())
-
-            # # Caculate 2D PCK as accuracy
-            # _, avg_acc, cnt, pred = accuracy(hm_pred.detach().cpu().numpy(),
-            #                                 hm_gt.detach().cpu().numpy())
-            # acc.update(avg_acc, cnt)
 
         # Log info
         msg = 'Test: [{0}/{1}]\t' \
-                '2D Loss {loss_2d.val:.5f} ({loss_2d.avg:.5f})\t' \
-                '3D Loss {loss_3d.val:.5f} ({loss_3d.avg:.5f})\t' \
-                'Total loss {total_loss.val:.5f} ({total_loss.avg:.5f})\t' \
-                '2D PCK Accuracy {acc.val:.3f} ({acc.avg:.3f})'.format(
-                    i+1, len(val_loader),
-                    loss_2d=loss_2d, loss_3d=loss_3d, total_loss=total_loss, acc=acc)
+              'Total loss {total_loss.val:.5f} ({total_loss.avg:.5f})'.format(
+                    i+1, val_loader.num_batches, total_loss=total_loss)
         logger.info(msg)
 
         if writer_dict:
@@ -137,14 +103,7 @@ def validate(config, val_loader, model, criterion, output_dir, device, logger, w
             global_steps = writer_dict['valid_global_steps']
             writer.add_scalar('Loss/val', total_loss.avg, global_steps)
             writer_dict['valid_global_steps'] = global_steps + 1
-                
-                # # Save debug images
-                # prefix = '{}_{}'.format(os.path.join(output_dir, 'val'), i+1)
-                # debug_pose_2d_gt = pose_2d_gt.clone()
-                # debug_pose_2d_gt[~vis_flag] = 0
-                # meta = {'joints': debug_pose_2d_gt, 
-                #         "joints_vis": target_weight}
-                # save_debug_images(config, input.cpu(), meta, hm_gt.cpu(), pred*4, hm_pred.cpu(), prefix)
+
     return total_loss.avg
 
 
@@ -197,24 +156,26 @@ def main(args):
                                  use_preset=args.use_preset)
     valid_dataset = ego4dDataset(cfg, 
                                  anno_type=args.anno_type, 
-                                 split='val', 
+                                 split='test', 
                                  transform=transform,
                                  use_preset=args.use_preset)
-    # Dataloader
-    train_loader = torch.utils.data.DataLoader(
-        train_dataset,
-        batch_size=cfg.TRAIN.BATCH_SIZE,
-        shuffle=cfg.TRAIN.SHUFFLE,
-        num_workers=cfg.WORKERS,
-        pin_memory=True
-    )
-    valid_loader = torch.utils.data.DataLoader(
-        valid_dataset,
-        batch_size=cfg.TEST.BATCH_SIZE,
-        shuffle=False,
-        num_workers=cfg.WORKERS,
-        pin_memory=True
-    )
+
+    ##################################
+    receptive_field = cfg.MODEL.RECEPTIVE_FIELD
+    pad = (receptive_field - 1) // 2 # Padding on each side
+    train_batch_size = cfg.TRAIN.BATCH_SIZE
+    val_batch_size = cfg.TEST.BATCH_SIZE
+    stride = 1
+    ##################################
+    # train dataloader
+    input_train, gt_pose3d_train, vis_flag_train, _, _, _, _, _ = train_dataset.get_data_by_subject()
+    train_generator = ChunkedGenerator(train_batch_size//stride, input_train, gt_pose3d_train, vis_flag_train, stride,
+                                       pad=pad, seq_to_one=True, shuffle=True)
+    # val dataloader
+    input_val, gt_pose3d_val, vis_flag_val, _, _, _, _, _ = valid_dataset.get_data_by_subject()
+    val_generator = ChunkedGenerator(val_batch_size//stride, input_val, gt_pose3d_val, vis_flag_val, stride,
+                                     pad=pad, seq_to_one=True, shuffle=False)
+    
     logger.info(f'Number of takes: Train: {len(train_dataset.curr_split_take)}\t Val: {len(valid_dataset.curr_split_take)}')
     logger.info(f"Learning rate: {cfg.TRAIN.LR} || Batch size: Train:{cfg.TRAIN.BATCH_SIZE}\t Val: {cfg.TEST.BATCH_SIZE}")
 
@@ -224,10 +185,10 @@ def main(args):
     for epoch in range(cfg.TRAIN.BEGIN_EPOCH, cfg.TRAIN.END_EPOCH):
         # train for one epoch
         logger.info(f'############# Starting Epoch {epoch} #############')
-        train_loss = train(cfg, train_loader, model, criterion, optimizer, epoch, final_output_dir, device, logger, writer_dict)
+        train_loss = train(cfg, train_generator, model, criterion, optimizer, epoch, final_output_dir, device, logger, writer_dict)
 
         # evaluate on validation set
-        val_loss = validate(cfg, valid_loader, model, criterion, final_output_dir, device, logger, writer_dict)
+        val_loss = validate(cfg, val_generator, model, criterion, final_output_dir, device, logger, writer_dict)
 
         # Save best model weight
         if val_loss < best_val_loss:
