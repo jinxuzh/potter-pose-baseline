@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 from .pool.poolattnformer_HR import PoolAttnFormer_hr, load_pretrained_weights, GroupNorm
+from einops import rearrange
 
 
 def norm_heatmap(norm_type, heatmap):
@@ -55,7 +56,7 @@ class PoolAttnHR_Pose_3D(nn.Module):
         ######### 2D pose head #########
         self.norm1 = GroupNorm(256)
         self.up_sample = nn.Sequential(
-            nn.Conv2d(self.embed_dims[0]*self.receptive_field, 256, 1),
+            nn.Conv2d(self.embed_dims[0], 256, 1),
             nn.GELU(),
         )
         self.final_layer = nn.Conv2d(
@@ -85,6 +86,8 @@ class PoolAttnHR_Pose_3D(nn.Module):
             nn.Linear(512, 3)
         )
 
+        self.weighted_head = nn.Parameter(torch.ones((self.receptive_field,1,1,1)), requires_grad=True) # (f,c,h,w)
+
 
     def _initialize(self):
         for m in self.up_sample.modules():
@@ -98,9 +101,11 @@ class PoolAttnHR_Pose_3D(nn.Module):
 
     def forward(self, x):
         # Forward through all branches
-        x_feature, _, _ = self.poolattnformer_pose(x) # feature_map: [N, 64*f, H_feat, W_feat]
+        x_feature, _, _ = self.poolattnformer_pose(x) # (b*f, c, h, w)
 
         # 2D pose head
+        x_feature = rearrange(x_feature, '(b f) c h w -> b f c h w', f=self.receptive_field)
+        x_feature = (x_feature * self.weighted_head).sum(dim=1) # (b,c,h,w)
         out = self.up_sample(x_feature) # [N, 256, H_feat, W_feat]
         out = self.norm1(out)
         out = self.final_layer(out) # [N, num_joints*emb_dim, H_feat, W_feat]
