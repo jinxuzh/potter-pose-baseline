@@ -38,7 +38,7 @@ class ego4dDataset(Dataset):
         self.hand_anno_dir = os.path.join(self.dataset_root, 'annotations/ego_pose/hand', self.anno_type)
         self.hand_bbox_anno_dir = os.path.join(self.dataset_root, 'annotations/ego_pose/hand/annotation_with_bbox')
         self.cam_pose_dir = os.path.join(self.dataset_root, 'annotations/ego_pose/hand/camera_pose')
-        self.undist_img_dir = os.path.join(self.dataset_root, 'aria_undistorted_images', self.anno_type)
+        self.undist_img_dir = os.path.join(self.dataset_root, 'aria_undistorted_images')
         self.all_take_uid = [k[:-5] for k in os.listdir(self.hand_anno_dir)]
         self.take_to_uid = {t['root_dir'] : t['take_uid'] for t in self.takes if t["take_uid"] in self.all_take_uid}
         self.uid_to_take = {uid:take for take, uid in self.take_to_uid.items()}
@@ -94,7 +94,7 @@ class ego4dDataset(Dataset):
 
     def __getitem__(self, idx):
         """
-        Return transformed images, 2D heatmap, offset 3D GT, target_weight and metadata
+        Return transformed images, normalized & offset 3D hand GT pose, valid hand joint flag and metadata.
         """
         curr_db = copy.deepcopy(self.db[idx])
         # Load in undistorted Aria images in extracted view
@@ -114,10 +114,6 @@ class ego4dDataset(Dataset):
         # Apply transformation to input images
         if self.transform:
             input = self.transform(input)
-        # Affine transformation to 2D hand kpts
-        curr_2d_kpts = curr_db['joints_2d']
-        curr_2d_kpts = affine_transform(curr_2d_kpts, trans)
-        curr_2d_kpts = torch.from_numpy(curr_2d_kpts.astype(np.float32))
 
         # Offset 3D kpts in camera by hand wrist
         curr_3d_kpts_cam = curr_db['joints_3d'].copy()
@@ -130,20 +126,18 @@ class ego4dDataset(Dataset):
         curr_3d_kpts_cam_offset[~curr_db['valid_flag']] = None
         curr_3d_kpts_cam_offset = torch.from_numpy(curr_3d_kpts_cam_offset.astype(np.float32))
 
-        # Generate 2D heatmap and corresponding weight
+        # Generate valid joints flag
         vis_flag = torch.from_numpy(curr_db['valid_flag'])
-        hm_2d, target_weight = self.generate_heatmap(curr_2d_kpts, vis_flag)
-        hm_2d = torch.from_numpy(hm_2d)
-        target_weight = torch.from_numpy(target_weight)
 
         # Record meta info for later reprojection
         meta = {
             "hand_wrist": torch.from_numpy(curr_db['joints_3d'][0].astype(np.float32)),
             "intrinsic": torch.from_numpy(curr_db['intrinsic'].astype(np.float32)),
             "joint_view_stat": torch.from_numpy(curr_db['joint_view_stat'].astype(np.float64)),
+            "img_path": img_path,
         }
 
-        return input, curr_2d_kpts, hm_2d, target_weight, curr_3d_kpts_cam_offset, vis_flag, meta
+        return input, curr_3d_kpts_cam_offset, vis_flag, meta
 
 
     def __len__(self,):
@@ -156,31 +150,26 @@ class ego4dDataset(Dataset):
         if not self.use_preset:
             # Based on split uids, found local take uids that has annotation
             curr_split_uid = self.split_take_dict[self.split]
-            # available_curr_split_uid = [t for t in self.all_take_uid if t in curr_split_uid]
-
-            # Instead of following provided train split, use all available takes (not in val/test) as train
-            if self.split == 'train':
-                available_curr_split_uid = [t for t in self.all_take_uid if t not in self.split_take_dict['val'] + self.split_take_dict['test']]
-            else:
-                available_curr_split_uid = [t for t in self.all_take_uid if t in curr_split_uid]
+            # Use interested takes
+            common_take_uid = list(set(self.all_take_uid) & set(self.takes_df['take_uid']))
+            available_cam_pose_uid = [k[:-5] for k in os.listdir(self.cam_pose_dir)]
+            comm_take_w_cam_pose = list(set(common_take_uid) & set(available_cam_pose_uid))
+            all_interested_scenario_uid, _ = get_interested_take(comm_take_w_cam_pose, self.takes_df)
+            
+            available_curr_split_uid = list(set(curr_split_uid) & set(all_interested_scenario_uid))
             print(f"Trying to use {len(available_curr_split_uid)} takes in {self.split} dataset")
         else:
             if self.split == 'train':
                 available_curr_split_uid = [
-                    "e3cb859e-73ca-4cef-8c08-296bafdb43cd",
-                    "d2218738-2af2-4585-bd1c-af8ad10d7827",
-                    "3940a14c-f0ae-4636-8f03-52daa071f084",
-                    "989b038e-d46c-4433-b968-87b58a4c7037",
-                    "354f076e-079f-440d-bd38-97ddfcd19002",
-                    "7014a547-6f84-48cb-bc91-28012c4cce06",
-                    "f0ebc587-3687-494d-a707-2a5d52b64719",
-                    "c507b073-7bf9-40db-8537-de599b6f6565",
-                    "794b3bd3-eac9-4d0d-9789-bd068bff3944",
-                    "c53a1199-5ca1-4aa8-ac4e-38227ff44689",
+                    None,
                 ]
             elif self.split == 'val':
                 available_curr_split_uid = [
-                    "7014a547-6f84-48cb-bc91-28012c4cce06"
+                    None,
+                ]
+            elif self.split == 'test':
+                available_curr_split_uid = [
+                    None,
                 ]
 
         # Iterate through all takes from annotation directory and check
@@ -215,7 +204,7 @@ class ego4dDataset(Dataset):
                                                      curr_take_hand_bbox))
         return gt_db
 
-    
+
     def load_take_raw_data(self, take_name, anno, cam_pose, img_root_dir, aria_mask, curr_take_hand_bbox):
         curr_take_db = []
 
@@ -356,8 +345,9 @@ class ego4dDataset(Dataset):
                 if finger_joint_order:
                     for finger_joint_idx in finger_joint_order:
                         finger_k_json = f"{hand}_{finger}_{finger_joint_idx}"
-                        # Load 3D
-                        if finger_k_json in curr_frame_3d_anno.keys():
+                        # Load 3D if exist annotation, and check for minimum number of visible views
+                        if finger_k_json in curr_frame_3d_anno.keys() and \
+                            curr_frame_3d_anno[finger_k_json]['num_views_for_3d'] >= 3:
                             curr_frame_3d_kpts.append([curr_frame_3d_anno[finger_k_json]['x'],
                                                        curr_frame_3d_anno[finger_k_json]['y'],
                                                        curr_frame_3d_anno[finger_k_json]['z']])
@@ -367,8 +357,9 @@ class ego4dDataset(Dataset):
                             joints_view_stat.append(None)
                 else:
                     finger_k_json = f"{hand}_{finger}"
-                    # Load 3D
-                    if finger_k_json in curr_frame_3d_anno.keys():
+                    # Load 3D if exist annotation, and check for minimum number of visible views
+                    if finger_k_json in curr_frame_3d_anno.keys() and \
+                        curr_frame_3d_anno[finger_k_json]['num_views_for_3d'] >= 3:
                             curr_frame_3d_kpts.append([curr_frame_3d_anno[finger_k_json]['x'],
                                                        curr_frame_3d_anno[finger_k_json]['y'],
                                                        curr_frame_3d_anno[finger_k_json]['z']])
@@ -393,8 +384,8 @@ class ego4dDataset(Dataset):
         """
         Return valid kpts with three checks:
             - Has valid kpts
-            - Inbound
-            - Visible
+            - Within image bound 
+            - Visible within aria mask
         Input:
             kpts: (21,2) raw single 2D hand kpts
             aria_mask: (H,W) binary mask that has same shape as undistorted aria image
@@ -719,10 +710,10 @@ def xywh2xyxy(bbox):
 
 ############# Joint distance threshold #############
 long_joint_dist_index = [4,8,12,16]
-joint_dist_min_threshold = np.full((20,), 0.002)
+joint_dist_min_threshold = np.full((20,), 0.005)
 joint_dist_min_threshold[long_joint_dist_index] = 0.06
-joint_dist_max_threshold = np.full((20,), 0.06)
-joint_dist_max_threshold[long_joint_dist_index] = 0.10
+joint_dist_max_threshold = np.full((20,), 0.08)
+joint_dist_max_threshold[long_joint_dist_index] = 0.12
 
 ############# Joint angle threshold #############
 joint_angle_min_threshold = np.array([100,90,90,
@@ -786,3 +777,15 @@ def joint_dist_angle_check(curr_hand_pose3d):
     invalid_flag = np.logical_or(invalid_dist_flag_, invalid_angle_flag_)
     curr_hand_pose3d[invalid_flag] = None
     return curr_hand_pose3d
+
+def get_interested_take(all_uids, takes_df):
+    interested_scenarios = ['Health', 'Bike Repair', 'Music', 'Cooking']
+    scenario_take_dict = {scenario:[] for scenario in interested_scenarios}
+    all_interested_scenario_uid = []
+    for curr_local_cam_valid_uid in all_uids:
+        curr_scenario = takes_df[takes_df['take_uid'] == curr_local_cam_valid_uid]['scenario_name'].item()
+        if curr_scenario in interested_scenarios:
+            scenario_take_dict[curr_scenario].append(curr_local_cam_valid_uid)
+            all_interested_scenario_uid.append(curr_local_cam_valid_uid)
+    all_interested_scenario_uid = sorted(all_interested_scenario_uid)
+    return all_interested_scenario_uid, scenario_take_dict

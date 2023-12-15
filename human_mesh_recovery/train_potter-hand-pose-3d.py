@@ -23,28 +23,24 @@ from hybrik.utils.option import parse_args_function
 
 
 def train(config, train_loader, model, criterion, optimizer, epoch, output_dir, device, logger, writer_dict):
-    loss_2d = AverageMeter()
     loss_3d = AverageMeter()
-    total_loss = AverageMeter()
-    acc = AverageMeter()
 
     # switch to train mode
     model.train()
     train_loader = tqdm(train_loader, dynamic_ncols=True)
     print_interval = len(train_loader) // config.TRAIN_PRINT_NUM
 
-    for i, (input, pose_2d_gt, hm_gt, target_weight, pose_3d_gt, vis_flag, _) in enumerate(train_loader):
+    for i, (input, pose_3d_gt, vis_flag, _) in enumerate(train_loader):
         # compute output
         input = input.to(device)
-        hm_pred, pose_3d_pred = model(input)
-        hm_gt = hm_gt.to(device)
+        pose_3d_pred = model(input)
         # Assign None kpts as zero
         pose_3d_gt[~vis_flag] = 0
         pose_3d_gt = pose_3d_gt.to(device)
         vis_flag = vis_flag.to(device)
 
-        hm_loss, pose_3d_loss = criterion(hm_pred, hm_gt, pose_3d_pred, pose_3d_gt, vis_flag)
-        loss = pose_3d_loss #hm_loss + pose_3d_loss
+        pose_3d_loss = criterion(pose_3d_pred, pose_3d_gt, vis_flag)
+        loss = pose_3d_loss
 
         # compute gradient and do update step
         optimizer.zero_grad()
@@ -52,100 +48,58 @@ def train(config, train_loader, model, criterion, optimizer, epoch, output_dir, 
         optimizer.step()
 
         # measure accuracy and record loss
-        # loss_2d.update(hm_loss.item())
         loss_3d.update(pose_3d_loss.item())
-        total_loss.update(loss.item())
-
-        # # Caculate 2D PCK as accuracy
-        # _, avg_acc, cnt, pred = accuracy(hm_pred.detach().cpu().numpy(),
-        #                                  hm_gt.detach().cpu().numpy())
-        # acc.update(avg_acc, cnt)
 
         # Log info
         if (i+1) % print_interval == 0:
             msg = 'Epoch: [{0}][{1}/{2}]\t' \
-                  '2D Loss {loss_2d.val:.5f} ({loss_2d.avg:.5f})\t' \
-                  '3D Loss {loss_3d.val:.5f} ({loss_3d.avg:.5f})\t' \
-                  'Total loss {total_loss.val:.5f} ({total_loss.avg:.5f})\t' \
-                  '2D PCK Accuracy {acc.val:.3f} ({acc.avg:.3f})'.format(
-                      epoch, i+1, len(train_loader),
-                      loss_2d=loss_2d, loss_3d=loss_3d, total_loss=total_loss, acc=acc)
+                  '3D Loss {loss_3d.val:.5f} ({loss_3d.avg:.5f})'.format(
+                      epoch, i+1, len(train_loader), loss_3d=loss_3d)
             logger.info(msg)
 
             if writer_dict:
                 writer = writer_dict['writer']
                 global_steps = writer_dict['train_global_steps']
-                writer.add_scalar('Loss/train', total_loss.avg, global_steps)
+                writer.add_scalar('Loss/train', loss_3d.avg, global_steps)
                 writer_dict['train_global_steps'] = global_steps + 1
 
-            # # Save debug images
-            # prefix = '{}_{}'.format(os.path.join(output_dir, 'train'), i+1)
-            # debug_pose_2d_gt = pose_2d_gt.clone()
-            # debug_pose_2d_gt[~vis_flag] = 0
-            # meta = {'joints': debug_pose_2d_gt, 
-            #         "joints_vis": target_weight}
-            # save_debug_images(config, input.cpu(), meta, hm_gt.cpu(), pred*4, hm_pred.cpu(), prefix)
-    return total_loss.avg
+    return loss_3d.avg
 
 
 def validate(config, val_loader, model, criterion, output_dir, device, logger, writer_dict):
-    loss_2d = AverageMeter()
     loss_3d = AverageMeter()
-    total_loss = AverageMeter()
-    acc = AverageMeter()
 
     # switch to evaluate mode
     model.eval()
 
     with torch.no_grad():
         val_loader = tqdm(val_loader, dynamic_ncols=True)
-        for i, (input, pose_2d_gt, hm_gt, target_weight, pose_3d_gt, vis_flag, _) in enumerate(val_loader):
+        for i, (input, pose_3d_gt, vis_flag, _) in enumerate(val_loader):
             # compute output
             input = input.to(device)
-            hm_pred, pose_3d_pred = model(input)
-            hm_gt = hm_gt.to(device)
-            # Assign None kpts as zero
+            pose_3d_pred = model(input)
             pose_3d_gt[~vis_flag] = 0
             pose_3d_gt = pose_3d_gt.to(device)
             vis_flag = vis_flag.to(device)
 
-            hm_loss, pose_3d_loss = criterion(hm_pred, hm_gt, pose_3d_pred, pose_3d_gt, vis_flag)
-            loss = pose_3d_loss #hm_loss + pose_3d_loss
+            pose_3d_loss = criterion(pose_3d_pred, pose_3d_gt, vis_flag)
 
             # measure accuracy and record loss
-            # loss_2d.update(hm_loss.item())
             loss_3d.update(pose_3d_loss.item())
-            total_loss.update(loss.item())
-
-            # # Caculate 2D PCK as accuracy
-            # _, avg_acc, cnt, pred = accuracy(hm_pred.detach().cpu().numpy(),
-            #                                 hm_gt.detach().cpu().numpy())
-            # acc.update(avg_acc, cnt)
 
         # Log info
         msg = 'Test: [{0}/{1}]\t' \
-                '2D Loss {loss_2d.val:.5f} ({loss_2d.avg:.5f})\t' \
-                '3D Loss {loss_3d.val:.5f} ({loss_3d.avg:.5f})\t' \
-                'Total loss {total_loss.val:.5f} ({total_loss.avg:.5f})\t' \
-                '2D PCK Accuracy {acc.val:.3f} ({acc.avg:.3f})'.format(
-                    i+1, len(val_loader),
-                    loss_2d=loss_2d, loss_3d=loss_3d, total_loss=total_loss, acc=acc)
+              '3D Loss {loss_3d.val:.5f} ({loss_3d.avg:.5f})'.format(
+                  i+1, len(val_loader), loss_3d=loss_3d)
         logger.info(msg)
 
         if writer_dict:
             writer = writer_dict['writer']
             global_steps = writer_dict['valid_global_steps']
-            writer.add_scalar('Loss/val', total_loss.avg, global_steps)
+            writer.add_scalar('Loss/val', loss_3d.avg, global_steps)
             writer_dict['valid_global_steps'] = global_steps + 1
-                
-                # # Save debug images
-                # prefix = '{}_{}'.format(os.path.join(output_dir, 'val'), i+1)
-                # debug_pose_2d_gt = pose_2d_gt.clone()
-                # debug_pose_2d_gt[~vis_flag] = 0
-                # meta = {'joints': debug_pose_2d_gt, 
-                #         "joints_vis": target_weight}
-                # save_debug_images(config, input.cpu(), meta, hm_gt.cpu(), pred*4, hm_pred.cpu(), prefix)
-    return total_loss.avg
+
+    return loss_3d.avg
 
 
 def main(args):
@@ -216,6 +170,7 @@ def main(args):
         pin_memory=True
     )
     logger.info(f'Number of takes: Train: {len(train_dataset.curr_split_take)}\t Val: {len(valid_dataset.curr_split_take)}')
+    logger.info(f"Number of images: Train: {len(train_dataset)}\t Val: {len(valid_dataset)}")
     logger.info(f"Learning rate: {cfg.TRAIN.LR} || Batch size: Train:{cfg.TRAIN.BATCH_SIZE}\t Val: {cfg.TEST.BATCH_SIZE}")
 
     ############ Train model & validation ###########

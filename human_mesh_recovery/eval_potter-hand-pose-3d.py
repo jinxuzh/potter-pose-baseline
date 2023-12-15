@@ -52,7 +52,7 @@ def main(args):
         num_workers=cfg.WORKERS,
         pin_memory=True
     )
-    print(f'Number of used takes: {len(valid_dataset.curr_split_take)}')
+    print(f'Number of takes: {len(valid_dataset.curr_split_take)} Number of images: {len(valid_dataset)}')
 
     ######### Inferece #########
     epoch_loss_3d_pos = AverageMeter()
@@ -60,10 +60,10 @@ def main(args):
 
     with torch.no_grad():
         valid_loader = tqdm(valid_loader, dynamic_ncols=True)
-        for i, (input, _, _, _, pose_3d_gt, vis_flag, meta) in enumerate(valid_loader):
+        for i, (input, pose_3d_gt, vis_flag, meta) in enumerate(valid_loader):
             # Pose 3D prediction
             input = input.to(device)
-            _, pose_3d_pred = model(input)
+            pose_3d_pred = model(input)
 
             # Unnormalize predicted and GT pose 3D kpts
             pred_3d_pts = pose_3d_pred.cpu().detach().numpy()

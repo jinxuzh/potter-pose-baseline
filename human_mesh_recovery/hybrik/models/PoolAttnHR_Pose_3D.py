@@ -62,18 +62,10 @@ class PoolAttnHR_Pose_3D(nn.Module):
         )
 
         ######### 3D pose head #########
-        # self.pose_3d_inter = nn.Sequential(
-        #     nn.Conv3d(
-        #         self.num_joints, self.num_joints, 1),
-        #     nn.GELU(),
-        #     nn.GroupNorm(self.num_joints, self.num_joints),
-        #     nn.Conv3d(
-        #         self.num_joints, self.num_joints, 1),
-        # )
         self.pose_3d_head = nn.Sequential(
             nn.Linear(self.depth_dim*3, 512),
             nn.ReLU(),
-            nn.GroupNorm(21,21),
+            nn.GroupNorm(self.num_joints, self.num_joints),
             nn.Linear(512, 3)
         )
 
@@ -92,7 +84,7 @@ class PoolAttnHR_Pose_3D(nn.Module):
         # Forward through all branches
         x_feature, _, _ = self.poolattnformer_pose(x) # feature_map: [N, 64, H_feat, W_feat]
 
-        # 2D pose head
+        # Intermediate layer
         out = self.up_sample(x_feature) # [N, 256, H_feat, W_feat]
         out = self.norm1(out)
         out = self.final_layer(out) # [N, num_joints*emb_dim, H_feat, W_feat]
@@ -101,18 +93,15 @@ class PoolAttnHR_Pose_3D(nn.Module):
                                           self.depth_dim, 
                                           out.shape[2], 
                                           out.shape[3])) # (N, num_joints, emb_dim, H_feat, W_feat)
-        # inter_res = out.clone()
-        hm_2d_pred = out.sum(2) # (N, num_joints, H_feat, W_feat) Elementwisely added along embed direction
 
         # 3D pose head
-        # out = self.pose_3d_inter(out)
         hm_x0 = out.sum((2, 3))
         hm_y0 = out.sum((2, 4))
         hm_z0 = out.sum((3, 4))
         pose_3d_pred = torch.cat((hm_x0, hm_y0, hm_z0), dim=2)
         pose_3d_pred = self.pose_3d_head(pose_3d_pred)
 
-        return hm_2d_pred, pose_3d_pred #, inter_res
+        return pose_3d_pred
 
 
 def load_pretrained_weights(model, checkpoint):
