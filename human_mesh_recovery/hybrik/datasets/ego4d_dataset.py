@@ -195,23 +195,24 @@ class ego4dDataset(Dataset):
             curr_take_hand_bbox = json.load(open(curr_take_hand_bbox_dir)) if self.split == 'test' else None
             # Get valid takes info for all frames
             if len(curr_take_anno) > 0 and len(curr_take_anno) <= len(curr_take_cam_pose):
-                _, _, aria_mask = self.load_aria_calib(curr_take_name)
+                aria_mask, aria_cam_name = self.load_aria_calib(curr_take_name)
                 gt_db.extend(self.load_take_raw_data(curr_take_name, 
                                                      curr_take_anno, 
                                                      curr_take_cam_pose,
+                                                     aria_cam_name,
                                                      curr_take_img_dir,
                                                      aria_mask,
                                                      curr_take_hand_bbox))
         return gt_db
 
 
-    def load_take_raw_data(self, take_name, anno, cam_pose, img_root_dir, aria_mask, curr_take_hand_bbox):
+    def load_take_raw_data(self, take_name, anno, cam_pose, aria_cam_name, img_root_dir, aria_mask, curr_take_hand_bbox):
         curr_take_db = []
 
         for frame_idx, curr_frame_anno in anno.items():
             # Load in current frame's 2D & 3D annotation and camera parameter
             curr_hand_3d_kpts, joint_view_stat = self.load_frame_hand_3d_kpts(curr_frame_anno)
-            curr_intri, curr_extri = self.load_frame_cam_pose(frame_idx, cam_pose)
+            curr_intri, curr_extri = self.load_frame_cam_pose(frame_idx, cam_pose, aria_cam_name)
             # Skip this frame if missing valid data
             if curr_hand_3d_kpts is None or curr_intri is None or curr_extri is None:
                 continue
@@ -320,7 +321,7 @@ class ego4dDataset(Dataset):
         undistorted_mask = calibration.distort_by_calibration(mask, dst_cam_calib, aria_rgb_calib)
         undistorted_mask = cv2.rotate(undistorted_mask, cv2.ROTATE_90_CLOCKWISE)
         undistorted_mask = undistorted_mask / 255
-        return aria_rgb_calib, dst_cam_calib, undistorted_mask
+        return undistorted_mask, ego_cam_names
 
 
     def load_frame_hand_3d_kpts(self, frame_anno):
@@ -370,13 +371,13 @@ class ego4dDataset(Dataset):
         return np.array(curr_frame_3d_kpts).astype(np.float32), np.array(joints_view_stat)
 
 
-    def load_frame_cam_pose(self, frame_idx, cam_pose):
+    def load_frame_cam_pose(self, frame_idx, cam_pose, aria_cam_name):
         # Check if current frame has corresponding camera pose
-        if frame_idx not in cam_pose.keys() or 'aria01' not in cam_pose[frame_idx].keys():
+        if frame_idx not in cam_pose.keys() or aria_cam_name not in cam_pose[frame_idx].keys():
             return None, None
         # Build camera projection matrix
-        curr_cam_intrinsic = np.array(cam_pose[frame_idx]['aria01']['camera_intrinsics'])
-        curr_cam_extrinsics = np.array(cam_pose[frame_idx]['aria01']['camera_extrinsics'])
+        curr_cam_intrinsic = np.array(cam_pose[frame_idx][aria_cam_name]['camera_intrinsics'])
+        curr_cam_extrinsics = np.array(cam_pose[frame_idx][aria_cam_name]['camera_extrinsics'])
         return curr_cam_intrinsic, curr_cam_extrinsics
 
 
